@@ -64,4 +64,7 @@ $RECYCLE.BIN/
 # Local Netlify folder
 .netlify
 
+# Environment variables file
+.env
+
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,windows,git

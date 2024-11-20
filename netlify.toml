@@ -14,5 +14,5 @@
   path = "/get-categories"
 
 [[edge_functions]]
-  function = "add-categories"
-  path = "/add-categories"
+  function = "add-category"
+  path = "/add-category"
