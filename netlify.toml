@@ -1,0 +1,15 @@
+[[edge_functions]]
+  function = "add-products"
+  path = "/products/add-products"
+
+[[edge_functions]]
+  function = "get-products"
+  path = "/products/get-products"
+  
+[[edge_functions]]
+  function = "get-categories"
+  path = "/categories/get-categories"
+
+[[edge_functions]]
+  function = "add-categories"
+  path = "/categories/add-categories"
