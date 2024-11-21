@@ -2,13 +2,21 @@
   publish = "netlify"
 
 [[edge_functions]]
-  function = "add-products"
-  path = "/add-products"
+  function = "add-item"
+  path = "/add-item"
 
 [[edge_functions]]
-  function = "get-products"
-  path = "/get-products"
-  
+  function = "get-items"
+  path = "/get-items"
+
+[[edge_functions]]
+  function = "update-item"
+  path = "/update-item"
+
+[[edge_functions]]
+  function = "delete-item"
+  path = "/delete-item"
+
 [[edge_functions]]
   function = "get-categories"
   path = "/get-categories"
