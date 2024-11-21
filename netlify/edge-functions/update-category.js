@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
-    authToken: Deno.env.get("TURSO_WRITE_TOKEN"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
   });
 };
 
@@ -12,8 +12,17 @@ const getCorsHeaders = () => {
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "PUT, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-KEY",
   };
+};
+
+const validateApiKey = (apiKey) => {
+  if (!apiKey) {
+    throw new Error("API key is required");
+  }
+  if (apiKey !== Deno.env.get("API_KEY")) {
+    throw new Error("Invalid API key");
+  }
 };
 
 const validateRequestData = (requestData) => {
@@ -21,23 +30,12 @@ const validateRequestData = (requestData) => {
     throw new Error("Invalid request data");
   }
 
-  const { id, api_key, user_id, name, image, is_active } = requestData;
+  const { id, user_id, name, image, is_active } = requestData;
 
-  if (
-    !id ||
-    !api_key ||
-    !user_id ||
-    !name ||
-    !image ||
-    is_active === undefined
-  ) {
+  if (!id || !user_id || !name || !image || is_active === undefined) {
     throw new Error(
-      "All fields are required: id, api_key, user_id, name, image, and is_active"
+      "All fields are required: id, user_id, name, image, and is_active"
     );
-  }
-
-  if (api_key !== Deno.env.get("API_KEY")) {
-    throw new Error("Invalid API key");
   }
 
   return { id, name, image, user_id, is_active };
@@ -148,6 +146,9 @@ export default async (request) => {
       throw new Error("Method not allowed");
     }
 
+    const apiKey = request.headers.get("X-API-KEY");
+    validateApiKey(apiKey);
+
     requestData = await request.json(); // Asignar dentro del try
 
     const { id, name, image, user_id, is_active } =
@@ -194,7 +195,7 @@ export default async (request) => {
     console.error("[ERROR] Operation failed:", error);
 
     let status = 500;
-    if (error.message.includes("Invalid API key")) status = 403;
+    if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
