@@ -25,7 +25,6 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-// Validate request data and return sanitized values
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -93,7 +92,6 @@ export default async (request) => {
     const tx = await turso.transaction();
 
     try {
-      // Soft delete category
       const oldCategoryResponse = await tx.execute({
         sql: "SELECT * FROM categories WHERE id = ?",
         args: [id],
@@ -104,6 +102,10 @@ export default async (request) => {
       }
 
       const oldCategory = oldCategoryResponse.rows[0];
+
+      if (oldCategory.is_deleted === 1) {
+        throw new Error("Category is already deleted");
+      }
 
       await tx.execute({
         sql: `UPDATE categories 
@@ -124,7 +126,6 @@ export default async (request) => {
         edited_by: oldCategory.edited_by,
       };
 
-      // Log audit trail
       await tx.execute({
         sql: `INSERT INTO categories_audit 
               (category_id, user_id, action_type, old_values, new_values) 
@@ -141,7 +142,6 @@ export default async (request) => {
         ],
       });
 
-      // Commit transaction
       await tx.commit();
 
       const updatedCategory = await getCategoryById(turso, id);
@@ -165,13 +165,13 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
-    // Set status code based on error message
     let status = 500;
     if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
-    if (error.message === "Invalid request data") status = 400;
+    if (error.message === "Category is already deleted") status = 400;
+    if (error.message === "Invalid ID or user ID") status = 400;
 
     console.log(
       "[INFO] Delete failed for category ID:",

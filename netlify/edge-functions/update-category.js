@@ -25,7 +25,6 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-// Validate request data and return sanitized values
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -39,7 +38,14 @@ const validateRequestData = (requestData) => {
     );
   }
 
-  return { id, name, image, user_id, is_active };
+  const sanitizedId = parseInt(id, 10);
+  const sanitizedUserId = parseInt(user_id, 10);
+
+  if (isNaN(sanitizedId) || isNaN(sanitizedUserId)) {
+    throw new Error("Invalid ID or user ID");
+  }
+
+  return { id: sanitizedId, name, image, user_id: sanitizedUserId, is_active };
 };
 
 const sanitizeData = (name, image) => {
@@ -64,16 +70,18 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
 
   const oldCategory = oldCategoryResponse.rows[0];
 
+  if (oldCategory.is_deleted === 1) {
+    throw new Error("Cannot update a deleted category");
+  }
+
   const tx = await turso.transaction();
 
   try {
-    // Update category
     await tx.execute({
       sql: "UPDATE categories SET name = ?, image = ?, is_active = ?, edited_by = ?, edited_at = datetime('now') WHERE id = ?",
       args: [name, image, isActiveInt, userId, id],
     });
 
-    // Prepare values for audit
     const oldValues = {
       id: oldCategory.id,
       name: oldCategory.name,
@@ -89,13 +97,11 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
       is_active: isActiveInt,
     };
 
-    // Insert audit record
     await tx.execute({
       sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'UPDATE', ?, ?)",
       args: [id, userId, JSON.stringify(oldValues), JSON.stringify(newValues)],
     });
 
-    // Commit transaction
     await tx.commit();
 
     return id;
@@ -114,7 +120,7 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
 const getCategoryById = async (turso, categoryId) => {
   const response = await turso.execute({
     sql: `
-      SELECT id, name, image, created_at, edited_at, is_active
+      SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
       FROM categories
       WHERE id = ?
     `,
@@ -185,13 +191,13 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
-    // Set status code based on error message
     let status = 500;
     if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
-    if (error.message === "Invalid request data") status = 400;
+    if (error.message === "Cannot update a deleted category") status = 400;
+    if (error.message === "Invalid ID or user ID") status = 400;
 
     console.log(
       "[INFO] Update failed for category ID:",
