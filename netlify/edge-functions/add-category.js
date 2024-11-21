@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
-    authToken: Deno.env.get("TURSO_WRITE_TOKEN"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
   });
 };
 
@@ -12,23 +12,28 @@ const getCorsHeaders = () => {
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-KEY",
   };
 };
 
+const validateApiKey = (apiKey) => {
+  if (!apiKey) {
+    throw new Error("API key is required");
+  }
+  if (apiKey !== Deno.env.get("API_KEY")) {
+    throw new Error("Invalid API key");
+  }
+};
+
 const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== 'object') {
+  if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
   }
 
-  const { api_key, user_id, name, image } = requestData;
+  const { user_id, name, image } = requestData;
 
-  if (!api_key || !user_id || !name || !image) {
-    throw new Error("All fields are required: api_key, user_id, name, and image");
-  }
-
-  if (api_key !== Deno.env.get("API_KEY")) {
-    throw new Error("Invalid API key");
+  if (!user_id || !name || !image) {
+    throw new Error("All fields are required: user_id, name, and image");
   }
 
   return { name, image, user_id };
@@ -42,12 +47,7 @@ const sanitizeData = (name, image) => {
   return sanitized;
 };
 
-const addCategory = async (
-  turso,
-  name,
-  image,
-  userId
-) => {
+const addCategory = async (turso, name, image, userId) => {
   const isActiveInt = 1; // Siempre activa
   const createdAt = new Date().toISOString().split("T")[0];
   const editedAt = createdAt;
@@ -137,6 +137,9 @@ export default async (request) => {
       throw new Error("Method not allowed");
     }
 
+    const apiKey = request.headers.get("X-API-KEY");
+    validateApiKey(apiKey);
+
     requestData = await request.json(); // Asignar dentro del try
 
     const { name, image, user_id } = validateRequestData(requestData);
@@ -183,7 +186,10 @@ export default async (request) => {
     if (error.message === "Failed to retrieve new category ID") status = 500;
 
     // Log de resultado fallido
-    console.log("[INFO] Add failed for category with name:", requestData?.name || "Unknown");
+    console.log(
+      "[INFO] Add failed for category with name:",
+      requestData?.name || "Unknown"
+    );
 
     return new Response(
       JSON.stringify({

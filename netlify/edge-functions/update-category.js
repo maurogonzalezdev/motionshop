@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
-    authToken: Deno.env.get("TURSO_WRITE_TOKEN"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
   });
 };
 
@@ -12,23 +12,30 @@ const getCorsHeaders = () => {
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "PUT, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-KEY",
   };
 };
 
+const validateApiKey = (apiKey) => {
+  if (!apiKey) {
+    throw new Error("API key is required");
+  }
+  if (apiKey !== Deno.env.get("API_KEY")) {
+    throw new Error("Invalid API key");
+  }
+};
+
 const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== 'object') {
+  if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
   }
 
-  const { id, api_key, user_id, name, image, is_active } = requestData;
+  const { id, user_id, name, image, is_active } = requestData;
 
-  if (!id || !api_key || !user_id || !name || !image || is_active === undefined) {
-    throw new Error("All fields are required: id, api_key, user_id, name, image, and is_active");
-  }
-
-  if (api_key !== Deno.env.get("API_KEY")) {
-    throw new Error("Invalid API key");
+  if (!id || !user_id || !name || !image || is_active === undefined) {
+    throw new Error(
+      "All fields are required: id, user_id, name, image, and is_active"
+    );
   }
 
   return { id, name, image, user_id, is_active };
@@ -55,7 +62,7 @@ const updateCategory = async (
 
   const oldCategoryResponse = await turso.execute({
     sql: "SELECT * FROM categories WHERE id = ?",
-    args: [id]
+    args: [id],
   });
 
   if (!oldCategoryResponse?.rows?.length) {
@@ -139,9 +146,13 @@ export default async (request) => {
       throw new Error("Method not allowed");
     }
 
+    const apiKey = request.headers.get("X-API-KEY");
+    validateApiKey(apiKey);
+
     requestData = await request.json(); // Asignar dentro del try
 
-    const { id, name, image, user_id, is_active } = validateRequestData(requestData);
+    const { id, name, image, user_id, is_active } =
+      validateRequestData(requestData);
 
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
@@ -184,14 +195,17 @@ export default async (request) => {
     console.error("[ERROR] Operation failed:", error);
 
     let status = 500;
-    if (error.message.includes("Invalid API key")) status = 403;
+    if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
     if (error.message === "Invalid request data") status = 400;
 
     // Log de resultado fallido
-    console.log("[INFO] Update failed for category ID:", requestData?.id || "Unknown");
+    console.log(
+      "[INFO] Update failed for category ID:",
+      requestData?.id || "Unknown"
+    );
 
     return new Response(
       JSON.stringify({
