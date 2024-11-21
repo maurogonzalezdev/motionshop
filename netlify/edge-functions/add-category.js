@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
-    authToken: Deno.env.get("TURSO_WRITE_TOKEN"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
   });
 };
 
@@ -12,8 +12,17 @@ const getCorsHeaders = () => {
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, X-API-KEY",
   };
+};
+
+const validateApiKey = (apiKey) => {
+  if (!apiKey) {
+    throw new Error("API key is required");
+  }
+  if (apiKey !== Deno.env.get("API_KEY")) {
+    throw new Error("Invalid API key");
+  }
 };
 
 const validateRequestData = (requestData) => {
@@ -21,16 +30,10 @@ const validateRequestData = (requestData) => {
     throw new Error("Invalid request data");
   }
 
-  const { api_key, user_id, name, image } = requestData;
+  const { user_id, name, image } = requestData;
 
-  if (!api_key || !user_id || !name || !image) {
-    throw new Error(
-      "All fields are required: api_key, user_id, name, and image"
-    );
-  }
-
-  if (api_key !== Deno.env.get("API_KEY")) {
-    throw new Error("Invalid API key");
+  if (!user_id || !name || !image) {
+    throw new Error("All fields are required: user_id, name, and image");
   }
 
   return { name, image, user_id };
@@ -133,6 +136,9 @@ export default async (request) => {
     if (request.method !== "POST") {
       throw new Error("Method not allowed");
     }
+
+    const apiKey = request.headers.get("X-API-KEY");
+    validateApiKey(apiKey);
 
     requestData = await request.json(); // Asignar dentro del try
 
