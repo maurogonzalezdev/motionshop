@@ -17,14 +17,23 @@ const getCorsHeaders = () => {
 };
 
 const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== 'object') {
+  if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
   }
 
   const { id, api_key, user_id, name, image, is_active } = requestData;
 
-  if (!id || !api_key || !user_id || !name || !image || is_active === undefined) {
-    throw new Error("All fields are required: id, api_key, user_id, name, image, and is_active");
+  if (
+    !id ||
+    !api_key ||
+    !user_id ||
+    !name ||
+    !image ||
+    is_active === undefined
+  ) {
+    throw new Error(
+      "All fields are required: id, api_key, user_id, name, image, and is_active"
+    );
   }
 
   if (api_key !== Deno.env.get("API_KEY")) {
@@ -55,7 +64,7 @@ const updateCategory = async (
 
   const oldCategoryResponse = await turso.execute({
     sql: "SELECT * FROM categories WHERE id = ?",
-    args: [id]
+    args: [id],
   });
 
   if (!oldCategoryResponse?.rows?.length) {
@@ -141,7 +150,8 @@ export default async (request) => {
 
     requestData = await request.json(); // Asignar dentro del try
 
-    const { id, name, image, user_id, is_active } = validateRequestData(requestData);
+    const { id, name, image, user_id, is_active } =
+      validateRequestData(requestData);
 
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
@@ -191,7 +201,10 @@ export default async (request) => {
     if (error.message === "Invalid request data") status = 400;
 
     // Log de resultado fallido
-    console.log("[INFO] Update failed for category ID:", requestData?.id || "Unknown");
+    console.log(
+      "[INFO] Update failed for category ID:",
+      requestData?.id || "Unknown"
+    );
 
     return new Response(
       JSON.stringify({

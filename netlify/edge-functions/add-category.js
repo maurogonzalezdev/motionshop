@@ -17,14 +17,16 @@ const getCorsHeaders = () => {
 };
 
 const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== 'object') {
+  if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
   }
 
   const { api_key, user_id, name, image } = requestData;
 
   if (!api_key || !user_id || !name || !image) {
-    throw new Error("All fields are required: api_key, user_id, name, and image");
+    throw new Error(
+      "All fields are required: api_key, user_id, name, and image"
+    );
   }
 
   if (api_key !== Deno.env.get("API_KEY")) {
@@ -42,12 +44,7 @@ const sanitizeData = (name, image) => {
   return sanitized;
 };
 
-const addCategory = async (
-  turso,
-  name,
-  image,
-  userId
-) => {
+const addCategory = async (turso, name, image, userId) => {
   const isActiveInt = 1; // Siempre activa
   const createdAt = new Date().toISOString().split("T")[0];
   const editedAt = createdAt;
@@ -183,7 +180,10 @@ export default async (request) => {
     if (error.message === "Failed to retrieve new category ID") status = 500;
 
     // Log de resultado fallido
-    console.log("[INFO] Add failed for category with name:", requestData?.name || "Unknown");
+    console.log(
+      "[INFO] Add failed for category with name:",
+      requestData?.name || "Unknown"
+    );
 
     return new Response(
       JSON.stringify({
