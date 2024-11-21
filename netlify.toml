@@ -16,3 +16,7 @@
 [[edge_functions]]
   function = "add-category"
   path = "/add-category"
+
+[[edge_functions]]
+  function = "update-category"
+  path = "/update-category"
