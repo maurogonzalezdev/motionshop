@@ -25,6 +25,7 @@ const validateApiKey = (apiKey) => {
   }
 };
 
+// Validate request data and return sanitized values
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -49,15 +50,7 @@ const sanitizeData = (name, image) => {
   return sanitized;
 };
 
-const updateCategory = async (
-  turso,
-  id,
-  name,
-  image,
-  editedAt,
-  userId,
-  isActive
-) => {
+const updateCategory = async (turso, id, name, image, userId, isActive) => {
   const isActiveInt = isActive ? 1 : 0;
 
   const oldCategoryResponse = await turso.execute({
@@ -74,11 +67,13 @@ const updateCategory = async (
   const tx = await turso.transaction();
 
   try {
-    const updateResponse = await tx.execute({
-      sql: "UPDATE categories SET name = ?, image = ?, is_active = ?, edited_at = ? WHERE id = ?",
-      args: [name, image, isActiveInt, editedAt, id],
+    // Update category
+    await tx.execute({
+      sql: "UPDATE categories SET name = ?, image = ?, is_active = ?, edited_by = ?, edited_at = datetime('now') WHERE id = ?",
+      args: [name, image, isActiveInt, userId, id],
     });
 
+    // Prepare values for audit
     const oldValues = {
       id: oldCategory.id,
       name: oldCategory.name,
@@ -92,14 +87,15 @@ const updateCategory = async (
       name,
       image,
       is_active: isActiveInt,
-      edited_at: editedAt,
     };
 
-    const auditResponse = await tx.execute({
+    // Insert audit record
+    await tx.execute({
       sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'UPDATE', ?, ?)",
       args: [id, userId, JSON.stringify(oldValues), JSON.stringify(newValues)],
     });
 
+    // Commit transaction
     await tx.commit();
 
     return id;
@@ -139,7 +135,7 @@ export default async (request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  let requestData; // Declarar la variable fuera del bloque try-catch
+  let requestData;
 
   try {
     if (request.method !== "PUT") {
@@ -149,18 +145,15 @@ export default async (request) => {
     const apiKey = request.headers.get("X-API-KEY");
     validateApiKey(apiKey);
 
-    requestData = await request.json(); // Asignar dentro del try
+    requestData = await request.json();
 
     const { id, name, image, user_id, is_active } =
       validateRequestData(requestData);
 
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
-    const editedAt = new Date().toISOString().split("T")[0];
-
     const turso = createTursoClient();
 
-    // Log de entrada con parámetros
     console.log("[INFO] Received update request with parameters:", {
       id,
       name: sanitized_name,
@@ -174,14 +167,12 @@ export default async (request) => {
       id,
       sanitized_name,
       sanitized_image,
-      editedAt,
       user_id,
       is_active
     );
 
     const category = await getCategoryById(turso, updatedCategoryId);
 
-    // Log de resultado exitoso
     console.log("[INFO] Update successful. Updated category:", category);
 
     return new Response(JSON.stringify(category), {
@@ -194,6 +185,7 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
+    // Set status code based on error message
     let status = 500;
     if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
@@ -201,7 +193,6 @@ export default async (request) => {
     if (error.message === "Category not found") status = 404;
     if (error.message === "Invalid request data") status = 400;
 
-    // Log de resultado fallido
     console.log(
       "[INFO] Update failed for category ID:",
       requestData?.id || "Unknown"

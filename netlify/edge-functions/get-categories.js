@@ -25,6 +25,7 @@ const validateApiKey = (apiKey) => {
   }
 };
 
+// Validate request data and return sanitized values
 const validateUrlParams = (url) => {
   const allowedParams = ["id"];
   for (const param of url.searchParams.keys()) {
@@ -63,7 +64,6 @@ export default async (request) => {
 
     const turso = createTursoClient();
 
-    // Log de entrada con parámetros
     console.log("[INFO] Received get request with parameters:", {
       categoryId,
     });
@@ -71,8 +71,7 @@ export default async (request) => {
     let response;
 
     if (categoryId) {
-      console.log("[INFO] Fetching specific category with ID:", categoryId);
-      // Obtener una categoría específica
+      // Fetch category by ID
       response = await turso.execute({
         sql: `
           SELECT id, name, image, created_at, edited_at, is_active
@@ -86,8 +85,7 @@ export default async (request) => {
         throw new Error("Category not found");
       }
     } else {
-      console.log("[INFO] Fetching all categories");
-      // Obtener todas las categorías
+      // Fetch all categories
       response = await turso.execute({
         sql: `
           SELECT id, name, image, created_at, edited_at, is_active
@@ -99,7 +97,6 @@ export default async (request) => {
 
     const categories = categoryId ? response.rows[0] : response.rows;
 
-    // Log de resultado exitoso
     console.log("[INFO] Get successful. Categories retrieved.");
 
     return new Response(JSON.stringify(categories), {
@@ -112,6 +109,7 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
+    // Set status code based on error message
     let status = 500;
     if (error.message.includes("API key")) status = 403;
     if (error.message === "Method not allowed") status = 405;
@@ -119,7 +117,6 @@ export default async (request) => {
     if (error.message.includes("Invalid parameter")) status = 400;
     if (error.message.includes("Invalid category ID")) status = 400;
 
-    // Log de resultado fallido
     console.log("[INFO] Get failed.");
 
     return new Response(

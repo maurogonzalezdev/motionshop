@@ -20,3 +20,7 @@
 [[edge_functions]]
   function = "update-category"
   path = "/update-category"
+
+[[edge_functions]]
+  function = "delete-category"
+  path = "/delete-category"

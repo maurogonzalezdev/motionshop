@@ -25,6 +25,7 @@ const validateApiKey = (apiKey) => {
   }
 };
 
+// Validate request data and return sanitized values
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -36,13 +37,20 @@ const validateRequestData = (requestData) => {
     throw new Error("All fields are required: id and user_id");
   }
 
-  return { id, user_id };
+  const sanitizedId = parseInt(id, 10);
+  const sanitizedUserId = parseInt(user_id, 10);
+
+  if (isNaN(sanitizedId) || isNaN(sanitizedUserId)) {
+    throw new Error("Invalid ID or user ID");
+  }
+
+  return { id: sanitizedId, user_id: sanitizedUserId };
 };
 
 const getCategoryById = async (turso, categoryId) => {
   const response = await turso.execute({
     sql: `
-      SELECT id, name, image, created_at, edited_at, is_active, is_deleted
+      SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
       FROM categories
       WHERE id = ?
     `,
@@ -77,11 +85,15 @@ export default async (request) => {
     const { id, user_id } = validateRequestData(requestData);
 
     const turso = createTursoClient();
-    console.log("[INFO] Received delete request with parameters:", { id, user_id });
+    console.log("[INFO] Received delete request with parameters:", {
+      id,
+      user_id,
+    });
 
     const tx = await turso.transaction();
 
     try {
+      // Soft delete category
       const oldCategoryResponse = await tx.execute({
         sql: "SELECT * FROM categories WHERE id = ?",
         args: [id],
@@ -97,9 +109,10 @@ export default async (request) => {
         sql: `UPDATE categories 
               SET is_active = 0, 
                   is_deleted = 1, 
-                  edited_at = datetime('now')
+                  edited_at = datetime('now'),
+                  edited_by = ?
               WHERE id = ?`,
-        args: [id],
+        args: [user_id, id],
       });
 
       const oldValues = {
@@ -108,24 +121,34 @@ export default async (request) => {
         image: oldCategory.image,
         is_active: oldCategory.is_active === 1,
         is_deleted: oldCategory.is_deleted === 1,
+        edited_by: oldCategory.edited_by,
       };
 
+      // Log audit trail
       await tx.execute({
         sql: `INSERT INTO categories_audit 
               (category_id, user_id, action_type, old_values, new_values) 
               VALUES (?, ?, 'DELETE', ?, ?)`,
         args: [
-          id, 
-          user_id, 
+          id,
+          user_id,
           JSON.stringify(oldValues),
-          JSON.stringify({ is_active: false, is_deleted: true })
+          JSON.stringify({
+            is_active: false,
+            is_deleted: true,
+            edited_by: user_id,
+          }),
         ],
       });
 
+      // Commit transaction
       await tx.commit();
 
       const updatedCategory = await getCategoryById(turso, id);
-      console.log("[INFO] Soft delete successful. Category updated:", updatedCategory);
+      console.log(
+        "[INFO] Soft delete successful. Category updated:",
+        updatedCategory
+      );
 
       return new Response(JSON.stringify(updatedCategory), {
         status: 200,
@@ -134,34 +157,33 @@ export default async (request) => {
           "Content-Type": "application/json",
         },
       });
-
     } catch (error) {
       console.error("[ERROR] Transaction failed:", error);
       await tx.rollback();
       throw error;
     }
-
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
+
+    // Set status code based on error message
     let status = 500;
-    
     if (error.message.includes("API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
     if (error.message === "Invalid request data") status = 400;
 
-    console.log("[INFO] Delete failed for category ID:", requestData?.id || "Unknown");
-
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      {
-        status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
+    console.log(
+      "[INFO] Delete failed for category ID:",
+      requestData?.id || "Unknown"
     );
+
+    return new Response(JSON.stringify({ error: error.message }), {
+      status,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   }
 };
