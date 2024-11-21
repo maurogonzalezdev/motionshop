@@ -17,12 +17,14 @@ const getCorsHeaders = () => {
 };
 
 const validateRequestData = (requestData) => {
-  const { name, image, api_key, user_id } = requestData;
+  if (!requestData || typeof requestData !== 'object') {
+    throw new Error("Invalid request data");
+  }
 
-  if (!name || !image || !api_key || !user_id) {
-    throw new Error(
-      "Missing required fields: name, image, api_key, and user_id"
-    );
+  const { api_key, user_id, name, image } = requestData;
+
+  if (!api_key || !user_id || !name || !image) {
+    throw new Error("All fields are required: api_key, user_id, name, and image");
   }
 
   if (api_key !== Deno.env.get("API_KEY")) {
@@ -33,84 +35,89 @@ const validateRequestData = (requestData) => {
 };
 
 const sanitizeData = (name, image) => {
-  return {
+  const sanitized = {
     sanitized_name: String(name).replace(/[^a-zA-Z0-9 ]/g, ""),
     sanitized_image: String(image).replace(/[^a-zA-Z0-9:/.]/g, ""),
   };
+  return sanitized;
 };
 
-const insertCategory = async (
+const addCategory = async (
   turso,
   name,
   image,
-  createdAt,
-  editedAt,
   userId
 ) => {
-  const query = `
-    INSERT INTO categories (name, image, created_at, edited_at, is_active)
-    VALUES (?, ?, ?, ?, ?)
-  `;
+  const isActiveInt = 1; // Siempre activa
+  const createdAt = new Date().toISOString().split("T")[0];
+  const editedAt = createdAt;
 
-  const response = await turso.execute({
-    sql: query,
-    args: [name, image, createdAt, editedAt, true],
-  });
+  const tx = await turso.transaction();
 
-  if (response.error) {
-    console.error(
-      `[ERROR] Failed to insert category: ${response.error.message}`
-    );
-    throw new Error("Failed to insert category");
+  try {
+    // Insertar nueva categoría
+    const insertResponse = await tx.execute({
+      sql: "INSERT INTO categories (name, image, is_active, created_at, edited_at) VALUES (?, ?, ?, ?, ?)",
+      args: [name, image, isActiveInt, createdAt, editedAt],
+    });
+
+    // Obtener el ID de la nueva categoría
+    const newCategoryId = insertResponse.lastInsertRowid;
+    if (!newCategoryId) {
+      throw new Error("Failed to retrieve new category ID");
+    }
+
+    // Preparar valores para la auditoría
+    const newCategory = {
+      id: newCategoryId,
+      name,
+      image,
+      is_active: true,
+      created_at: createdAt,
+      edited_at: editedAt,
+    };
+
+    const auditValues = {
+      name,
+      image,
+      is_active: isActiveInt,
+      edited_at: editedAt,
+    };
+
+    // Insertar registro de auditoría
+    await tx.execute({
+      sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'INSERT', NULL, ?)",
+      args: [newCategoryId, userId, JSON.stringify(auditValues)],
+    });
+
+    // Confirmar transacción
+    await tx.commit();
+
+    return newCategoryId;
+  } catch (error) {
+    console.error("[ERROR] Transaction failed:", error);
+    try {
+      await tx.rollback();
+      console.log("[INFO] Transaction rolled back");
+    } catch (rollbackError) {
+      console.error("[ERROR] Rollback failed:", rollbackError);
+    }
+    throw error;
   }
-
-  const newCategoryId = response.lastInsertRowid.toString();
-
-  const auditQuery = `
-    INSERT INTO categories_audit (category_id, user_id, action_type, new_values)
-    VALUES (?, ?, 'INSERT', ?)
-  `;
-
-  const newValues = JSON.stringify({
-    name,
-    image,
-    createdAt,
-    editedAt,
-    is_active: true,
-  });
-
-  const auditResponse = await turso.execute({
-    sql: auditQuery,
-    args: [newCategoryId, userId, newValues],
-  });
-
-  if (auditResponse.error) {
-    console.error(
-      `[ERROR] Failed to insert audit record: ${auditResponse.error.message}`
-    );
-    throw new Error("Failed to insert audit record");
-  }
-
-  return newCategoryId;
 };
 
 const getCategoryById = async (turso, categoryId) => {
-  const query = `
-    SELECT id, name, image, created_at, edited_at, is_active
-    FROM categories
-    WHERE id = ?
-  `;
-
   const response = await turso.execute({
-    sql: query,
+    sql: `
+      SELECT id, name, image, created_at, edited_at, is_active
+      FROM categories
+      WHERE id = ?
+    `,
     args: [categoryId],
   });
 
-  if (response.error) {
-    console.error(
-      `[ERROR] Failed to fetch category: ${response.error.message}`
-    );
-    throw new Error("Failed to fetch category");
+  if (!response?.rows?.length) {
+    throw new Error("Category not found");
   }
 
   return response.rows[0];
@@ -123,35 +130,39 @@ export default async (request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  let requestData; // Declarar la variable fuera del bloque try-catch
+
   try {
     if (request.method !== "POST") {
       throw new Error("Method not allowed");
     }
 
-    const requestData = await request.json();
+    requestData = await request.json(); // Asignar dentro del try
+
     const { name, image, user_id } = validateRequestData(requestData);
 
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
-    const createdAt = new Date().toISOString().split("T")[0];
-    const editedAt = createdAt;
-
     const turso = createTursoClient();
 
-    const newCategoryId = await insertCategory(
+    // Log de entrada con parámetros
+    console.log("[INFO] Received add request with parameters:", {
+      name: sanitized_name,
+      image: sanitized_image,
+      user_id,
+    });
+
+    const newCategoryId = await addCategory(
       turso,
       sanitized_name,
       sanitized_image,
-      createdAt,
-      editedAt,
       user_id
     );
 
-    console.log(
-      `[SUCCESS] Category inserted successfully. ID: ${newCategoryId}`
-    );
-
     const category = await getCategoryById(turso, newCategoryId);
+
+    // Log de resultado exitoso
+    console.log("[INFO] Add successful. New category:", category);
 
     return new Response(JSON.stringify(category), {
       status: 201,
@@ -161,12 +172,18 @@ export default async (request) => {
       },
     });
   } catch (error) {
-    console.error(`[ERROR] ${error.message}`);
+    console.error("[ERROR] Operation failed:", error);
 
     let status = 500;
     if (error.message.includes("Invalid API key")) status = 403;
-    if (error.message.includes("Missing required fields")) status = 400;
+    if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
+    if (error.message === "Category not found") status = 404;
+    if (error.message === "Invalid request data") status = 400;
+    if (error.message === "Failed to retrieve new category ID") status = 500;
+
+    // Log de resultado fallido
+    console.log("[INFO] Add failed for category with name:", requestData?.name || "Unknown");
 
     return new Response(
       JSON.stringify({
