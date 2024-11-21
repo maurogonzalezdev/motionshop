@@ -25,7 +25,6 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-// Validate request data and return sanitized values
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -54,32 +53,27 @@ const addCategory = async (turso, name, image, userId) => {
   const tx = await turso.transaction();
 
   try {
-    // Insert new category
     const insertResponse = await tx.execute({
       sql: "INSERT INTO categories (name, image, is_active, created_by, edited_by) VALUES (?, ?, ?, ?, ?)",
       args: [name, image, isActiveInt, userId, userId],
     });
 
-    // Get the ID of the new category
     const newCategoryId = insertResponse.lastInsertRowid;
     if (!newCategoryId) {
       throw new Error("Failed to retrieve new category ID");
     }
 
-    // Prepare values for audit
     const auditValues = {
       name,
       image,
       is_active: isActiveInt,
     };
 
-    // Insert audit record
     await tx.execute({
       sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'INSERT', NULL, ?)",
       args: [newCategoryId, userId, JSON.stringify(auditValues)],
     });
 
-    // Commit transaction
     await tx.commit();
 
     return newCategoryId;
@@ -164,7 +158,6 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
-    // Set status code based on error message
     let status = 500;
     if (error.message.includes("Invalid API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;

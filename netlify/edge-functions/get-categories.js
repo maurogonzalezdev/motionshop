@@ -25,7 +25,6 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-// Validate request data and return sanitized values
 const validateUrlParams = (url) => {
   const allowedParams = ["id"];
   for (const param of url.searchParams.keys()) {
@@ -63,20 +62,14 @@ export default async (request) => {
     validateCategoryId(categoryId);
 
     const turso = createTursoClient();
-
-    console.log("[INFO] Received get request with parameters:", {
-      categoryId,
-    });
-
     let response;
 
     if (categoryId) {
-      // Fetch category by ID
       response = await turso.execute({
         sql: `
-          SELECT id, name, image, created_at, edited_at, is_active
+          SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
           FROM categories
-          WHERE id = ?
+          WHERE id = ? AND is_deleted = 0
         `,
         args: [categoryId],
       });
@@ -85,11 +78,11 @@ export default async (request) => {
         throw new Error("Category not found");
       }
     } else {
-      // Fetch all categories
       response = await turso.execute({
         sql: `
-          SELECT id, name, image, created_at, edited_at, is_active
+          SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
           FROM categories
+          WHERE is_deleted = 0
         `,
         args: [],
       });
@@ -109,7 +102,6 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
-    // Set status code based on error message
     let status = 500;
     if (error.message.includes("API key")) status = 403;
     if (error.message === "Method not allowed") status = 405;
@@ -119,17 +111,12 @@ export default async (request) => {
 
     console.log("[INFO] Get failed.");
 
-    return new Response(
-      JSON.stringify({
-        error: error.message,
-      }),
-      {
-        status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return new Response(JSON.stringify({ error: error.message }), {
+      status,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   }
 };
