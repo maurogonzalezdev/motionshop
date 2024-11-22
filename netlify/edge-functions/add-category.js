@@ -48,62 +48,48 @@ const sanitizeData = (name, image) => {
 };
 
 const addCategory = async (turso, name, image, userId) => {
-  const isActiveInt = 1;
-
   const tx = await turso.transaction();
 
   try {
     const insertResponse = await tx.execute({
-      sql: "INSERT INTO categories (name, image, is_active, created_by, edited_by) VALUES (?, ?, ?, ?, ?)",
-      args: [name, image, isActiveInt, userId, userId],
+      sql: "INSERT INTO categories (name, image, is_active, is_deleted, created_by, edited_by) VALUES (?, ?, 1, 0, ?, ?)",
+      args: [name, image, userId, userId],
     });
 
-    const newCategoryId = insertResponse.lastInsertRowid;
-    if (!newCategoryId) {
-      throw new Error("Failed to retrieve new category ID");
+    const newCategoryId = Number(insertResponse.lastInsertRowid);
+
+    const categoryResponse = await tx.execute({
+      sql: `SELECT * FROM categories WHERE id = ?`,
+      args: [newCategoryId],
+    });
+
+    if (!categoryResponse?.rows?.length) {
+      throw new Error("Failed to verify category creation");
     }
 
-    const auditValues = {
-      name,
-      image,
-      is_active: isActiveInt,
-    };
+    const category = categoryResponse.rows[0];
 
     await tx.execute({
       sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'INSERT', NULL, ?)",
-      args: [newCategoryId, userId, JSON.stringify(auditValues)],
+      args: [
+        newCategoryId,
+        userId,
+        JSON.stringify({
+          name,
+          image,
+          is_active: true,
+          is_deleted: false,
+        }),
+      ],
     });
 
     await tx.commit();
-
-    return newCategoryId;
+    return category;
   } catch (error) {
     console.error("[ERROR] Transaction failed:", error);
-    try {
-      await tx.rollback();
-      console.log("[INFO] Transaction rolled back");
-    } catch (rollbackError) {
-      console.error("[ERROR] Rollback failed:", rollbackError);
-    }
+    await tx.rollback();
     throw error;
   }
-};
-
-const getCategoryById = async (turso, categoryId) => {
-  const response = await turso.execute({
-    sql: `
-      SELECT id, name, image, created_at, edited_at, is_active
-      FROM categories
-      WHERE id = ?
-    `,
-    args: [categoryId],
-  });
-
-  if (!response?.rows?.length) {
-    throw new Error("Category not found");
-  }
-
-  return response.rows[0];
 };
 
 export default async (request) => {
@@ -124,29 +110,28 @@ export default async (request) => {
     validateApiKey(apiKey);
 
     requestData = await request.json();
-
     const { name, image, user_id } = validateRequestData(requestData);
-
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
     const turso = createTursoClient();
 
-    console.log("[INFO] Received add request with parameters:", {
+    console.log("[INFO] Creating category:", {
       name: sanitized_name,
       image: sanitized_image,
       user_id,
     });
 
-    const newCategoryId = await addCategory(
+    const category = await addCategory(
       turso,
       sanitized_name,
       sanitized_image,
       user_id
     );
 
-    const category = await getCategoryById(turso, newCategoryId);
-
-    console.log("[INFO] Add successful. New category:", category);
+    console.log("[SUCCESS] Category created successfully:", {
+      id: category.id,
+      name: category.name,
+    });
 
     return new Response(JSON.stringify(category), {
       status: 201,
@@ -156,32 +141,24 @@ export default async (request) => {
       },
     });
   } catch (error) {
-    console.error("[ERROR] Operation failed:", error);
+    console.error("[ERROR] Failed to create category:", {
+      error: error.message,
+      category: requestData?.name || "Unknown",
+    });
 
     let status = 500;
     if (error.message.includes("Invalid API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
-    if (error.message === "Category not found") status = 404;
+    if (error.message === "Failed to verify category creation") status = 500;
     if (error.message === "Invalid request data") status = 400;
-    if (error.message === "Failed to retrieve new category ID") status = 500;
 
-    console.log(
-      "[INFO] Add failed for category with name:",
-      requestData?.name || "Unknown"
-    );
-
-    return new Response(
-      JSON.stringify({
-        error: error.message,
-      }),
-      {
-        status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return new Response(JSON.stringify({ error: error.message }), {
+      status,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   }
 };
