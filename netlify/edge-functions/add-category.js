@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
+import validator from "https://esm.sh/validator@13.7.0";
 
 const createTursoClient = () => {
   return createClient({
@@ -25,26 +26,59 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== "object") {
-    throw new Error("Invalid request data");
-  }
-
-  const { user_id, name, image } = requestData;
-
-  if (!user_id || !name || !image) {
-    throw new Error("All fields are required: user_id, name, and image");
-  }
-
-  return { name, image, user_id };
+const sanitizeData = (data) => {
+  return {
+    name: validator.escape(validator.trim(data.name)),
+    userId: validator.escape(validator.trim(data.userId)),
+  };
 };
 
-const sanitizeData = (name, image) => {
-  const sanitized = {
-    sanitized_name: String(name).replace(/[^a-zA-Z0-9 ]/g, ""),
-    sanitized_image: String(image).replace(/[^a-zA-Z0-9:/.]/g, ""),
+const uploadImageToImageKit = async (imageFile) => {
+  const allowedTypes = [
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ];
+  if (!allowedTypes.includes(imageFile.type)) {
+    throw new Error("Unsupported image type");
+  }
+
+  const maxSize = 1 * 1024 * 1024; // 1 MB
+  if (imageFile.size > maxSize) {
+    throw new Error("Image size exceeds the maximum limit of 1MB");
+  }
+
+  const formData = new FormData();
+  formData.append("file", imageFile);
+  formData.append("fileName", `cat_${imageFile.name}`);
+
+  const transformation = {
+    pre: "h-100,w-100,c-at_max,q-85",
   };
-  return sanitized;
+  formData.append("transformation", JSON.stringify(transformation));
+
+  const response = await fetch(Deno.env.get("IMAGEKIT_UPLOAD_URL"), {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(
+        Deno.env.get("IMAGEKIT_PRIVATE_KEY") + ":"
+      )}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("ImageKit Response:", errorText);
+    throw new Error(
+      `Error al subir la imagen a ImageKit: ${response.statusText} - ${errorText}`
+    );
+  }
+
+  const data = await response.json();
+  return data.url;
 };
 
 const addCategory = async (turso, name, image, userId) => {
@@ -59,7 +93,7 @@ const addCategory = async (turso, name, image, userId) => {
     const newCategoryId = Number(insertResponse.lastInsertRowid);
 
     const categoryResponse = await tx.execute({
-      sql: `SELECT * FROM categories WHERE id = ?`,
+      sql: "SELECT * FROM categories WHERE id = ?",
       args: [newCategoryId],
     });
 
@@ -99,8 +133,6 @@ export default async (request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  let requestData;
-
   try {
     if (request.method !== "POST") {
       throw new Error("Method not allowed");
@@ -109,28 +141,49 @@ export default async (request) => {
     const apiKey = request.headers.get("X-API-KEY");
     validateApiKey(apiKey);
 
-    requestData = await request.json();
-    const { name, image, user_id } = validateRequestData(requestData);
-    const { sanitized_name, sanitized_image } = sanitizeData(name, image);
+    const formData = await request.formData();
+    const name = formData.get("name");
+    const image = formData.get("image");
+    const userId = formData.get("user_id");
 
+    if (!name || !image || !userId) {
+      throw new Error("All fields are required: user_id, name, and image");
+    }
+
+    const sanitizedData = sanitizeData({ name, userId });
     const turso = createTursoClient();
 
+    console.log("[INFO] Subiendo imagen a ImageKit");
+    let imageKitImageUrl;
+    try {
+      imageKitImageUrl = await uploadImageToImageKit(image);
+    } catch (uploadError) {
+      console.error(
+        "[ERROR] Error al subir la imagen a ImageKit:",
+        uploadError.message
+      );
+      throw new Error(
+        "Error al subir la imagen a ImageKit: " + uploadError.message
+      );
+    }
+
     console.log("[INFO] Creating category:", {
-      name: sanitized_name,
-      image: sanitized_image,
-      user_id,
+      name: sanitizedData.name,
+      image: imageKitImageUrl,
+      user_id: sanitizedData.userId,
     });
 
     const category = await addCategory(
       turso,
-      sanitized_name,
-      sanitized_image,
-      user_id
+      sanitizedData.name,
+      imageKitImageUrl,
+      sanitizedData.userId
     );
 
     console.log("[SUCCESS] Category created successfully:", {
       id: category.id,
       name: category.name,
+      image: category.image,
     });
 
     return new Response(JSON.stringify(category), {
