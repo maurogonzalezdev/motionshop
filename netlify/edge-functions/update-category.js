@@ -49,89 +49,83 @@ const validateRequestData = (requestData) => {
 };
 
 const sanitizeData = (name, image) => {
-  const sanitized = {
+  return {
     sanitized_name: String(name).replace(/[^a-zA-Z0-9 ]/g, ""),
     sanitized_image: String(image).replace(/[^a-zA-Z0-9:/.]/g, ""),
   };
-  return sanitized;
 };
 
 const updateCategory = async (turso, id, name, image, userId, isActive) => {
-  const isActiveInt = isActive ? 1 : 0;
-
-  const oldCategoryResponse = await turso.execute({
-    sql: "SELECT * FROM categories WHERE id = ?",
-    args: [id],
-  });
-
-  if (!oldCategoryResponse?.rows?.length) {
-    throw new Error("Category not found");
-  }
-
-  const oldCategory = oldCategoryResponse.rows[0];
-
-  if (oldCategory.is_deleted === 1) {
-    throw new Error("Cannot update a deleted category");
-  }
-
   const tx = await turso.transaction();
 
   try {
+    const oldCategoryResponse = await tx.execute({
+      sql: "SELECT * FROM categories WHERE id = ?",
+      args: [id],
+    });
+
+    if (!oldCategoryResponse?.rows?.length) {
+      throw new Error("Category not found");
+    }
+
+    const oldCategory = oldCategoryResponse.rows[0];
+
+    if (oldCategory.is_deleted === 1) {
+      throw new Error("Cannot update a deleted category");
+    }
+
+    const isActiveInt = isActive ? 1 : 0;
+
     await tx.execute({
-      sql: "UPDATE categories SET name = ?, image = ?, is_active = ?, edited_by = ?, edited_at = datetime('now') WHERE id = ?",
+      sql: `UPDATE categories 
+            SET name = ?, 
+                image = ?, 
+                is_active = ?, 
+                edited_by = ?,
+                edited_at = datetime('now')
+            WHERE id = ?`,
       args: [name, image, isActiveInt, userId, id],
     });
 
-    const oldValues = {
-      id: oldCategory.id,
-      name: oldCategory.name,
-      image: oldCategory.image,
-      is_active: oldCategory.is_active === 1,
-      created_at: oldCategory.created_at,
-      edited_at: oldCategory.edited_at,
-    };
+    const updatedCategoryResponse = await tx.execute({
+      sql: `SELECT * FROM categories WHERE id = ?`,
+      args: [id],
+    });
 
-    const newValues = {
-      name,
-      image,
-      is_active: isActiveInt,
-    };
+    if (!updatedCategoryResponse?.rows?.length) {
+      throw new Error("Failed to verify category update");
+    }
+
+    const updatedCategory = updatedCategoryResponse.rows[0];
 
     await tx.execute({
-      sql: "INSERT INTO categories_audit (category_id, user_id, action_type, old_values, new_values) VALUES (?, ?, 'UPDATE', ?, ?)",
-      args: [id, userId, JSON.stringify(oldValues), JSON.stringify(newValues)],
+      sql: `INSERT INTO categories_audit 
+            (category_id, user_id, action_type, old_values, new_values) 
+            VALUES (?, ?, 'UPDATE', ?, ?)`,
+      args: [
+        id,
+        userId,
+        JSON.stringify({
+          id: oldCategory.id,
+          name: oldCategory.name,
+          image: oldCategory.image,
+          is_active: oldCategory.is_active === 1,
+        }),
+        JSON.stringify({
+          name,
+          image,
+          is_active: isActiveInt === 1,
+        }),
+      ],
     });
 
     await tx.commit();
-
-    return id;
+    return updatedCategory;
   } catch (error) {
     console.error("[ERROR] Transaction failed:", error);
-    try {
-      await tx.rollback();
-      console.log("[INFO] Transaction rolled back");
-    } catch (rollbackError) {
-      console.error("[ERROR] Rollback failed:", rollbackError);
-    }
+    await tx.rollback();
     throw error;
   }
-};
-
-const getCategoryById = async (turso, categoryId) => {
-  const response = await turso.execute({
-    sql: `
-      SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
-      FROM categories
-      WHERE id = ?
-    `,
-    args: [categoryId],
-  });
-
-  if (!response?.rows?.length) {
-    throw new Error("Category not found");
-  }
-
-  return response.rows[0];
 };
 
 export default async (request) => {
@@ -152,15 +146,13 @@ export default async (request) => {
     validateApiKey(apiKey);
 
     requestData = await request.json();
-
     const { id, name, image, user_id, is_active } =
       validateRequestData(requestData);
-
     const { sanitized_name, sanitized_image } = sanitizeData(name, image);
 
     const turso = createTursoClient();
 
-    console.log("[INFO] Received update request with parameters:", {
+    console.log("[INFO] Updating category:", {
       id,
       name: sanitized_name,
       image: sanitized_image,
@@ -168,7 +160,7 @@ export default async (request) => {
       is_active,
     });
 
-    const updatedCategoryId = await updateCategory(
+    const category = await updateCategory(
       turso,
       id,
       sanitized_name,
@@ -177,9 +169,10 @@ export default async (request) => {
       is_active
     );
 
-    const category = await getCategoryById(turso, updatedCategoryId);
-
-    console.log("[INFO] Update successful. Updated category:", category);
+    console.log("[SUCCESS] Category updated successfully:", {
+      id: category.id,
+      name: category.name,
+    });
 
     return new Response(JSON.stringify(category), {
       status: 200,
@@ -189,32 +182,25 @@ export default async (request) => {
       },
     });
   } catch (error) {
-    console.error("[ERROR] Operation failed:", error);
+    console.error("[ERROR] Failed to update category:", {
+      error: error.message,
+      category: requestData?.name || "Unknown",
+    });
 
     let status = 500;
-    if (error.message.includes("API key")) status = 403;
+    if (error.message.includes("Invalid API key")) status = 403;
     if (error.message.includes("All fields are required")) status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
     if (error.message === "Cannot update a deleted category") status = 400;
     if (error.message === "Invalid ID or user ID") status = 400;
 
-    console.log(
-      "[INFO] Update failed for category ID:",
-      requestData?.id || "Unknown"
-    );
-
-    return new Response(
-      JSON.stringify({
-        error: error.message,
-      }),
-      {
-        status,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return new Response(JSON.stringify({ error: error.message }), {
+      status,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   }
 };

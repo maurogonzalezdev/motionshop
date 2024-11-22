@@ -46,21 +46,76 @@ const validateRequestData = (requestData) => {
   return { id: sanitizedId, user_id: sanitizedUserId };
 };
 
-const getCategoryById = async (turso, categoryId) => {
-  const response = await turso.execute({
-    sql: `
-      SELECT id, name, image, created_at, edited_at, is_active, is_deleted, edited_by
-      FROM categories
-      WHERE id = ?
-    `,
-    args: [categoryId],
-  });
+const softDeleteCategory = async (turso, id, userId) => {
+  const tx = await turso.transaction();
 
-  if (!response?.rows?.length) {
-    throw new Error("Category not found");
+  try {
+    const oldCategoryResponse = await tx.execute({
+      sql: "SELECT * FROM categories WHERE id = ?",
+      args: [id],
+    });
+
+    if (!oldCategoryResponse?.rows?.length) {
+      throw new Error("Category not found");
+    }
+
+    const oldCategory = oldCategoryResponse.rows[0];
+
+    if (oldCategory.is_deleted === 1) {
+      throw new Error("Category is already deleted");
+    }
+
+    await tx.execute({
+      sql: `UPDATE categories 
+            SET is_active = 0, 
+                is_deleted = 1, 
+                edited_at = datetime('now'),
+                edited_by = ?
+            WHERE id = ?`,
+      args: [userId, id],
+    });
+
+    const updatedCategoryResponse = await tx.execute({
+      sql: `SELECT * FROM categories WHERE id = ?`,
+      args: [id],
+    });
+
+    if (!updatedCategoryResponse?.rows?.length) {
+      throw new Error("Failed to verify category update");
+    }
+
+    const updatedCategory = updatedCategoryResponse.rows[0];
+
+    await tx.execute({
+      sql: `INSERT INTO categories_audit 
+            (category_id, user_id, action_type, old_values, new_values) 
+            VALUES (?, ?, 'DELETE', ?, ?)`,
+      args: [
+        id,
+        userId,
+        JSON.stringify({
+          id: oldCategory.id,
+          name: oldCategory.name,
+          image: oldCategory.image,
+          is_active: oldCategory.is_active === 1,
+          is_deleted: oldCategory.is_deleted === 1,
+          edited_by: oldCategory.edited_by,
+        }),
+        JSON.stringify({
+          is_active: false,
+          is_deleted: true,
+          edited_by: userId,
+        }),
+      ],
+    });
+
+    await tx.commit();
+    return updatedCategory;
+  } catch (error) {
+    console.error("[ERROR] Transaction failed:", error);
+    await tx.rollback();
+    throw error;
   }
-
-  return response.rows[0];
 };
 
 export default async (request) => {
@@ -84,84 +139,23 @@ export default async (request) => {
     const { id, user_id } = validateRequestData(requestData);
 
     const turso = createTursoClient();
-    console.log("[INFO] Received delete request with parameters:", {
-      id,
-      user_id,
+
+    console.log("[INFO] Received delete request:", { id, user_id });
+
+    const category = await softDeleteCategory(turso, id, user_id);
+
+    console.log("[SUCCESS] Category soft deleted:", {
+      id: category.id,
+      name: category.name,
     });
 
-    const tx = await turso.transaction();
-
-    try {
-      const oldCategoryResponse = await tx.execute({
-        sql: "SELECT * FROM categories WHERE id = ?",
-        args: [id],
-      });
-
-      if (!oldCategoryResponse?.rows?.length) {
-        throw new Error("Category not found");
-      }
-
-      const oldCategory = oldCategoryResponse.rows[0];
-
-      if (oldCategory.is_deleted === 1) {
-        throw new Error("Category is already deleted");
-      }
-
-      await tx.execute({
-        sql: `UPDATE categories 
-              SET is_active = 0, 
-                  is_deleted = 1, 
-                  edited_at = datetime('now'),
-                  edited_by = ?
-              WHERE id = ?`,
-        args: [user_id, id],
-      });
-
-      const oldValues = {
-        id: oldCategory.id,
-        name: oldCategory.name,
-        image: oldCategory.image,
-        is_active: oldCategory.is_active === 1,
-        is_deleted: oldCategory.is_deleted === 1,
-        edited_by: oldCategory.edited_by,
-      };
-
-      await tx.execute({
-        sql: `INSERT INTO categories_audit 
-              (category_id, user_id, action_type, old_values, new_values) 
-              VALUES (?, ?, 'DELETE', ?, ?)`,
-        args: [
-          id,
-          user_id,
-          JSON.stringify(oldValues),
-          JSON.stringify({
-            is_active: false,
-            is_deleted: true,
-            edited_by: user_id,
-          }),
-        ],
-      });
-
-      await tx.commit();
-
-      const updatedCategory = await getCategoryById(turso, id);
-      console.log(
-        "[INFO] Soft delete successful. Category updated:",
-        updatedCategory
-      );
-
-      return new Response(JSON.stringify(updatedCategory), {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          "Content-Type": "application/json",
-        },
-      });
-    } catch (error) {
-      console.error("[ERROR] Transaction failed:", error);
-      await tx.rollback();
-      throw error;
-    }
+    return new Response(JSON.stringify(category), {
+      status: 200,
+      headers: {
+        ...corsHeaders,
+        "Content-Type": "application/json",
+      },
+    });
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
@@ -174,7 +168,7 @@ export default async (request) => {
     if (error.message === "Invalid ID or user ID") status = 400;
 
     console.log(
-      "[INFO] Delete failed for category ID:",
+      "[ERROR] Delete failed for category ID:",
       requestData?.id || "Unknown"
     );
 
