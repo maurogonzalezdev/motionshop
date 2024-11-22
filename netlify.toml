@@ -32,3 +32,7 @@
 [[edge_functions]]
   function = "delete-category"
   path = "/delete-category"
+
+[[edge_functions]]
+  function = "get-inventory"
+  path = "/get-inventory"
