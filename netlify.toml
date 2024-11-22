@@ -36,3 +36,7 @@
 [[edge_functions]]
   function = "get-inventory"
   path = "/get-inventory"
+
+[[edge_functions]]
+  function = "update-credits"
+  path = "/update-credits"
