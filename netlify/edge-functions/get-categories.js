@@ -77,6 +77,30 @@ export default async (request) => {
       if (!response?.rows?.length) {
         throw new Error("Category not found");
       }
+
+      // Obtener items de la categoría
+      const itemsResponse = await turso.execute({
+        sql: `
+          SELECT items.id, items.name, items.description, items.price, items.image, items.is_active, items.is_deleted, items.created_at, items.edited_at, items.created_by, items.edited_by
+          FROM items
+          INNER JOIN item_categories ON items.id = item_categories.item_id
+          WHERE item_categories.category_id = ? AND items.is_deleted = 0
+        `,
+        args: [categoryId],
+      });
+
+      const category = response.rows[0];
+      category.items = itemsResponse.rows;
+
+      console.log("[INFO] Get successful. Category and its items retrieved.");
+
+      return new Response(JSON.stringify(category), {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+        },
+      });
     } else {
       response = await turso.execute({
         sql: `
@@ -88,7 +112,7 @@ export default async (request) => {
       });
     }
 
-    const categories = categoryId ? response.rows[0] : response.rows;
+    const categories = response.rows;
 
     console.log("[INFO] Get successful. Categories retrieved.");
 

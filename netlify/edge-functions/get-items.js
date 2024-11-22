@@ -34,89 +34,10 @@ const validateUrlParams = (url) => {
   }
 };
 
-const validateItemId = (itemId) => {
-  if (itemId && isNaN(Number(itemId))) {
-    throw new Error("Invalid item ID");
+const validateId = (id) => {
+  if (id && isNaN(Number(id))) {
+    throw new Error("Invalid ID");
   }
-};
-
-const getItemWithCategories = async (turso, itemId) => {
-  const itemResponse = await turso.execute({
-    sql: `
-      SELECT 
-        i.*,
-        GROUP_CONCAT(ic.category_id) as category_ids,
-        GROUP_CONCAT(c.name) as category_names,
-        GROUP_CONCAT(c.is_active) as category_active_states
-      FROM items i
-      JOIN item_categories ic ON i.id = ic.item_id
-      JOIN categories c ON ic.category_id = c.id
-      WHERE i.id = ? 
-        AND i.is_deleted = 0
-        AND c.is_deleted = 0
-      GROUP BY i.id
-    `,
-    args: [itemId],
-  });
-
-  if (!itemResponse?.rows?.length) {
-    throw new Error("Item not found");
-  }
-
-  const item = { ...itemResponse.rows[0] };
-  const categoryIds = item.category_ids.split(",");
-  const categoryNames = item.category_names.split(",");
-  const categoryActiveStates = item.category_active_states.split(",");
-
-  item.categories = categoryIds.map((id, index) => ({
-    id: Number(id),
-    name: categoryNames[index],
-    is_active: categoryActiveStates[index] === "1",
-  }));
-
-  delete item.category_ids;
-  delete item.category_names;
-  delete item.category_active_states;
-
-  return item;
-};
-
-const getAllItems = async (turso) => {
-  const itemsResponse = await turso.execute({
-    sql: `
-      SELECT 
-        i.*,
-        GROUP_CONCAT(ic.category_id) as category_ids,
-        GROUP_CONCAT(c.name) as category_names,
-        GROUP_CONCAT(c.is_active) as category_active_states
-      FROM items i
-      JOIN item_categories ic ON i.id = ic.item_id
-      JOIN categories c ON ic.category_id = c.id
-      WHERE i.is_deleted = 0
-        AND c.is_deleted = 0
-      GROUP BY i.id
-    `,
-    args: [],
-  });
-
-  return itemsResponse.rows.map((row) => {
-    const item = { ...row };
-    const categoryIds = item.category_ids.split(",");
-    const categoryNames = item.category_names.split(",");
-    const categoryActiveStates = item.category_active_states.split(",");
-
-    item.categories = categoryIds.map((id, index) => ({
-      id: Number(id),
-      name: categoryNames[index],
-      is_active: categoryActiveStates[index] === "1",
-    }));
-
-    delete item.category_ids;
-    delete item.category_names;
-    delete item.category_active_states;
-
-    return item;
-  });
 };
 
 export default async (request) => {
@@ -138,42 +59,139 @@ export default async (request) => {
     validateUrlParams(url);
 
     const itemId = url.searchParams.get("id");
-    validateItemId(itemId);
+
+    validateId(itemId);
 
     const turso = createTursoClient();
-    let items;
-
-    console.log(
-      "[INFO] Processing get request:",
-      itemId ? `for item ID: ${itemId}` : "for all items"
-    );
+    let response;
 
     if (itemId) {
-      items = await getItemWithCategories(turso, itemId);
+      response = await turso.execute({
+        sql: `
+          SELECT items.*, categories.id AS category_id, categories.name AS category_name, categories.is_active AS category_is_active
+          FROM items
+          LEFT JOIN item_categories ON items.id = item_categories.item_id
+          LEFT JOIN categories ON item_categories.category_id = categories.id
+          WHERE items.id = ? AND items.is_deleted = 0
+        `,
+        args: [itemId],
+      });
+
+      if (!response?.rows?.length) {
+        throw new Error("Item not found");
+      }
+
+      // Agrupar categorías
+      const item = response.rows.reduce((acc, row) => {
+        if (!acc.id) {
+          acc = {
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            price: row.price,
+            image: row.image,
+            is_active: row.is_active,
+            is_deleted: row.is_deleted,
+            created_at: row.created_at,
+            edited_at: row.edited_at,
+            created_by: row.created_by,
+            edited_by: row.edited_by,
+            categories: [],
+          };
+        }
+        if (row.category_id) {
+          acc.categories.push({
+            id: row.category_id,
+            name: row.category_name,
+            is_active: !!row.category_is_active,
+          });
+        }
+        return acc;
+      }, {});
+
+      console.log("[INFO] Get item successful.");
+
+      return new Response(JSON.stringify(item), {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+        },
+      });
     } else {
-      items = await getAllItems(turso);
+      response = await turso.execute({
+        sql: `
+          SELECT items.*, categories.id AS category_id, categories.name AS category_name, categories.is_active AS category_is_active
+          FROM items
+          LEFT JOIN item_categories ON items.id = item_categories.item_id
+          LEFT JOIN categories ON item_categories.category_id = categories.id
+          WHERE items.is_deleted = 0
+        `,
+        args: [],
+      });
+
+      if (!response?.rows?.length) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: {
+            ...corsHeaders,
+            "Content-Type": "application/json",
+          },
+        });
+      }
+
+      // Agrupar categorías por cada item
+      const itemsMap = {};
+
+      response.rows.forEach((row) => {
+        if (!itemsMap[row.id]) {
+          itemsMap[row.id] = {
+            id: row.id,
+            name: row.name,
+            description: row.description,
+            price: row.price,
+            image: row.image,
+            is_active: row.is_active,
+            is_deleted: row.is_deleted,
+            created_at: row.created_at,
+            edited_at: row.edited_at,
+            created_by: row.created_by,
+            edited_by: row.edited_by,
+            categories: [],
+          };
+        }
+        if (row.category_id) {
+          itemsMap[row.id].categories.push({
+            id: row.category_id,
+            name: row.category_name,
+            is_active: !!row.category_is_active,
+          });
+        }
+      });
+
+      const items = Object.values(itemsMap);
+
+      console.log("[INFO] Get all items successful.");
+
+      return new Response(JSON.stringify(items), {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          "Content-Type": "application/json",
+        },
+      });
     }
-
-    console.log("[INFO] Get successful. Items retrieved.");
-
-    return new Response(JSON.stringify(items), {
-      status: 200,
-      headers: {
-        ...corsHeaders,
-        "Content-Type": "application/json",
-      },
-    });
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
 
     let status = 500;
     if (error.message.includes("API key")) status = 403;
-    if (error.message === "Method not allowed") status = 405;
-    if (error.message === "Item not found") status = 404;
-    if (error.message.includes("Invalid parameter")) status = 400;
-    if (error.message.includes("Invalid item ID")) status = 400;
+    if (error.message === "Método no permitido") status = 405;
+    if (error.message === "Item no encontrado") status = 404;
+    if (error.message.includes("Parámetro inválido")) status = 400;
+    if (error.message.includes("ID inválido")) status = 400;
 
-    console.log("[INFO] Get failed.");
+    console.log("[INFO] Get items failed.");
 
     return new Response(JSON.stringify({ error: error.message }), {
       status,
