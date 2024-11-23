@@ -193,6 +193,7 @@ export default async (request) => {
     const { sanitized_name, sanitized_description, sanitized_image } =
       sanitizeData(name, description, image);
 
+    // Crear el cliente de Turso dentro del manejador
     const turso = createTursoClient();
 
     console.log("[INFO] Creating item:", {
