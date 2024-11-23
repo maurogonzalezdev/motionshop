@@ -81,7 +81,7 @@ const validateCategoryId = (categoryId) => {
  * @param {Object} turso - Turso client.
  * @param {string|null} itemId - Specific item ID to retrieve.
  * @param {string|null} categoryId - Specific category ID to filter items.
- * @returns {Promise<Object|Object[]>} Single item with categories or an array of items.
+ * @returns {Promise<Object|Object[]>} Single item with categories or an array of items with their categories.
  * @throws {Error} If the item or category is not found or a database error occurs.
  */
 const getItems = async (turso, itemId, categoryId) => {
@@ -124,7 +124,26 @@ const getItems = async (turso, itemId, categoryId) => {
       args: [categoryId],
     });
 
-    return itemsResponse.rows;
+    const items = itemsResponse.rows;
+
+    // Obtener categorías para cada ítem
+    const itemsWithCategories = await Promise.all(
+      items.map(async (item) => {
+        const categoriesResponse = await turso.execute({
+          sql: `
+            SELECT categories.id, categories.name, categories.image
+            FROM categories
+            INNER JOIN item_categories ON categories.id = item_categories.category_id
+            WHERE item_categories.item_id = ? AND categories.is_deleted = 0
+          `,
+          args: [item.id],
+        });
+        item.categories = categoriesResponse.rows;
+        return item;
+      })
+    );
+
+    return itemsWithCategories;
   } else {
     const response = await turso.execute({
       sql: `
@@ -135,7 +154,26 @@ const getItems = async (turso, itemId, categoryId) => {
       args: [],
     });
 
-    return response.rows;
+    const items = response.rows;
+
+    // Obtener categorías para cada ítem
+    const itemsWithCategories = await Promise.all(
+      items.map(async (item) => {
+        const categoriesResponse = await turso.execute({
+          sql: `
+            SELECT categories.id, categories.name, categories.image
+            FROM categories
+            INNER JOIN item_categories ON categories.id = item_categories.category_id
+            WHERE item_categories.item_id = ? AND categories.is_deleted = 0
+          `,
+          args: [item.id],
+        });
+        item.categories = categoriesResponse.rows;
+        return item;
+      })
+    );
+
+    return itemsWithCategories;
   }
 };
 
