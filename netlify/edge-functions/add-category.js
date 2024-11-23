@@ -4,6 +4,17 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 import validator from "https://esm.sh/validator@13.7.0";
 
 /**
+ * Creates a new Turso client instance.
+ * @returns {Object} Turso client.
+ */
+const createTursoClient = () => {
+  return createClient({
+    url: Deno.env.get("TURSO_URL"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
+  });
+};
+
+/**
  * Obtains the necessary CORS headers for responses.
  * @returns {Object} CORS headers.
  */
@@ -172,8 +183,9 @@ const addCategory = async (turso, name, imageUrl, user_id) => {
 
 /**
  * Handles incoming requests to add a new category.
+ * Applies best practices for Turso connections, error handling, and documentation.
  * @param {Request} request - Incoming request object.
- * @returns {Promise<Response>} HTTP response.
+ * @returns {Promise<Response>} HTTP response containing the new category data or an error message.
  */
 export default async (request) => {
   const corsHeaders = getCorsHeaders();
@@ -183,6 +195,7 @@ export default async (request) => {
   }
 
   let requestData = {}; // Define requestData in the external scope
+  const turso = createTursoClient();
 
   try {
     if (request.method !== "POST") {
@@ -217,14 +230,8 @@ export default async (request) => {
       throw new Error("Invalid image file");
     }
 
-    // Update the sanitized image with the uploaded URL
+    // Update the sanitized data with the uploaded image URL
     requestData.image = imageUrl;
-
-    // Create the Turso client within the handler to avoid "invalid baton"
-    const turso = createClient({
-      url: Deno.env.get("TURSO_URL"),
-      authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
-    });
 
     // Insert the category and wait for the result to get the ID
     const category = await addCategory(
@@ -279,5 +286,14 @@ export default async (request) => {
         "Content-Type": "application/json",
       },
     });
+  } finally {
+    if (turso) {
+      try {
+        await turso.execute({ type: "close" });
+        console.log("[INFO] Turso connection closed successfully.");
+      } catch (closeError) {
+        console.error("[ERROR] Failed to close Turso connection:", closeError);
+      }
+    }
   }
 };

@@ -1,5 +1,11 @@
+// delete-item.js
+
 import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 
+/**
+ * Creates a new Turso client instance.
+ * @returns {Object} Turso client.
+ */
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
@@ -7,6 +13,10 @@ const createTursoClient = () => {
   });
 };
 
+/**
+ * Obtains the necessary CORS headers for responses.
+ * @returns {Object} CORS headers.
+ */
 const getCorsHeaders = () => {
   const allowedOrigin = Deno.env.get("FORUM_URL");
   return {
@@ -16,6 +26,11 @@ const getCorsHeaders = () => {
   };
 };
 
+/**
+ * Validates the API key provided in the headers.
+ * @param {string} apiKey - API key to validate.
+ * @throws {Error} If the API key is not valid.
+ */
 const validateApiKey = (apiKey) => {
   if (!apiKey) {
     throw new Error("API key is required");
@@ -25,6 +40,12 @@ const validateApiKey = (apiKey) => {
   }
 };
 
+/**
+ * Validates the request data.
+ * @param {Object} requestData - Request data.
+ * @returns {Object} Sanitized data.
+ * @throws {Error} If the data is not valid.
+ */
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
@@ -46,6 +67,14 @@ const validateRequestData = (requestData) => {
   return { id: sanitizedId, user_id: sanitizedUserId };
 };
 
+/**
+ * Soft deletes an item in the database.
+ * @param {Object} turso - Turso client.
+ * @param {number} id - Item ID.
+ * @param {number} userId - ID of the user performing the deletion.
+ * @returns {Promise<Object>} Updated item object.
+ * @throws {Error} If an error occurs during the transaction.
+ */
 const softDeleteItem = async (turso, id, userId) => {
   const tx = await turso.transaction();
 
@@ -128,6 +157,12 @@ const softDeleteItem = async (turso, id, userId) => {
   }
 };
 
+/**
+ * Handles incoming requests to delete an item.
+ * Applies best practices for Turso connections, error handling, and documentation.
+ * @param {Request} request - Incoming request object.
+ * @returns {Promise<Response>} HTTP response containing the updated item data or an error message.
+ */
 export default async (request) => {
   const corsHeaders = getCorsHeaders();
 
@@ -136,6 +171,7 @@ export default async (request) => {
   }
 
   let requestData;
+  const turso = createTursoClient();
 
   try {
     if (request.method !== "DELETE") {
@@ -147,8 +183,6 @@ export default async (request) => {
 
     requestData = await request.json();
     const { id, user_id } = validateRequestData(requestData);
-
-    const turso = createTursoClient();
 
     console.log("[INFO] Received delete request:", { id, user_id });
 
@@ -189,5 +223,14 @@ export default async (request) => {
         "Content-Type": "application/json",
       },
     });
+  } finally {
+    if (turso) {
+      try {
+        await turso.execute({ type: "close" });
+        console.log("[INFO] Turso connection closed successfully.");
+      } catch (closeError) {
+        console.error("[ERROR] Failed to close Turso connection:", closeError);
+      }
+    }
   }
 };

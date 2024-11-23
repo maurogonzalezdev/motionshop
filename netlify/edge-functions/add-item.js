@@ -4,6 +4,17 @@ import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 import validator from "https://esm.sh/validator@13.7.0";
 
 /**
+ * Creates a new Turso client instance.
+ * @returns {Object} Turso client.
+ */
+const createTursoClient = () => {
+  return createClient({
+    url: Deno.env.get("TURSO_URL"),
+    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
+  });
+};
+
+/**
  * Obtains the necessary CORS headers for responses.
  * @returns {Object} CORS headers.
  */
@@ -149,7 +160,7 @@ const uploadImageToImageKit = async (imageFile) => {
 
   const formData = new FormData();
   formData.append("file", imageFile);
-  formData.append("fileName", `item_${imageFile.name}`);
+  formData.append("fileName", `itm_${imageFile.name}`);
   formData.append(
     "transformation",
     JSON.stringify({ pre: "h-200,w-200,c-at_max,q-80" })
@@ -271,8 +282,9 @@ const addItem = async (
 
 /**
  * Handles incoming requests to add a new item.
+ * Applies best practices for Turso connections, error handling, and documentation.
  * @param {Request} request - Incoming request object.
- * @returns {Promise<Response>} HTTP response.
+ * @returns {Promise<Response>} HTTP response containing the new item data or an error message.
  */
 export default async (request) => {
   const corsHeaders = getCorsHeaders();
@@ -282,6 +294,7 @@ export default async (request) => {
   }
 
   let requestData = {}; // Define requestData in the external scope
+  const turso = createTursoClient();
 
   try {
     if (request.method !== "POST") {
@@ -338,21 +351,6 @@ export default async (request) => {
     // Update the sanitized image with the uploaded URL
     requestData.image = imageUrl;
 
-    // Create the Turso client within the handler to avoid "invalid baton"
-    const turso = createClient({
-      url: Deno.env.get("TURSO_URL"),
-      authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
-    });
-
-    console.log("[INFO] Creating item:", {
-      name: requestData.name,
-      description: requestData.description,
-      image: requestData.image,
-      price: requestData.price,
-      categories: requestData.categories,
-      user_id: requestData.user_id,
-    });
-
     // Insert the item and wait for the result to get the ID
     const item = await addItem(
       turso,
@@ -364,12 +362,7 @@ export default async (request) => {
       requestData.user_id
     );
 
-    console.log("[SUCCESS] Item created successfully:", {
-      id: item.id,
-      name: item.name,
-    });
-
-    // Build the response object
+    // Return the new item with id and is_active
     const newItem = {
       id: item.id,
       name: item.name,
@@ -416,5 +409,14 @@ export default async (request) => {
         "Content-Type": "application/json",
       },
     });
+  } finally {
+    if (turso) {
+      try {
+        await turso.execute({ type: "close" });
+        console.log("[INFO] Turso connection closed successfully.");
+      } catch (closeError) {
+        console.error("[ERROR] Failed to close Turso connection:", closeError);
+      }
+    }
   }
 };

@@ -1,5 +1,12 @@
-import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
+// update-category.js
 
+import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
+import validator from "https://esm.sh/validator@13.7.0";
+
+/**
+ * Creates a new Turso client instance.
+ * @returns {Object} Turso client.
+ */
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
@@ -7,15 +14,24 @@ const createTursoClient = () => {
   });
 };
 
+/**
+ * Obtains the necessary CORS headers for responses.
+ * @returns {Object} CORS headers.
+ */
 const getCorsHeaders = () => {
   const allowedOrigin = Deno.env.get("FORUM_URL");
   return {
     "Access-Control-Allow-Origin": allowedOrigin,
-    "Access-Control-Allow-Methods": "PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "PATCH, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-API-KEY",
   };
 };
 
+/**
+ * Validates the API key provided in the headers.
+ * @param {string} apiKey - API key to validate.
+ * @throws {Error} If the API key is not valid.
+ */
 const validateApiKey = (apiKey) => {
   if (!apiKey) {
     throw new Error("API key is required");
@@ -25,17 +41,21 @@ const validateApiKey = (apiKey) => {
   }
 };
 
+/**
+ * Validates the request data.
+ * @param {Object} requestData - Request data.
+ * @returns {Object} Sanitized data.
+ * @throws {Error} If the data is not valid.
+ */
 const validateRequestData = (requestData) => {
   if (!requestData || typeof requestData !== "object") {
     throw new Error("Invalid request data");
   }
 
-  const { id, user_id, name, image, is_active } = requestData;
+  const { id, user_id } = requestData;
 
-  if (!id || !user_id || !name || !image || is_active === undefined) {
-    throw new Error(
-      "All fields are required: id, user_id, name, image, and is_active"
-    );
+  if (!id || !user_id) {
+    throw new Error("Fields 'id' and 'user_id' are required");
   }
 
   const sanitizedId = parseInt(id, 10);
@@ -45,16 +65,95 @@ const validateRequestData = (requestData) => {
     throw new Error("Invalid ID or user ID");
   }
 
-  return { id: sanitizedId, name, image, user_id: sanitizedUserId, is_active };
+  return { id: sanitizedId, user_id: sanitizedUserId };
 };
 
-const sanitizeData = (name, image) => {
+/**
+ * Sanitizes and validates the data received in the request.
+ * @param {Object} data - Request data.
+ * @returns {Object} Sanitized data.
+ * @throws {Error} If the data is not valid.
+ */
+const sanitizeData = (data) => {
+  const sanitizedName = data.name
+    ? validator.escape(validator.trim(data.name))
+    : null;
+  const sanitizedUserId = parseInt(data.user_id, 10);
+
+  if (isNaN(sanitizedUserId)) {
+    throw new Error("Invalid user ID");
+  }
+
   return {
-    sanitized_name: String(name).replace(/[^a-zA-Z0-9 ]/g, ""),
-    sanitized_image: String(image).replace(/[^a-zA-Z0-9:/.]/g, ""),
+    name: sanitizedName,
+    user_id: sanitizedUserId,
   };
 };
 
+/**
+ * Uploads an image to ImageKit and returns the image URL.
+ * @param {File} imageFile - Image file to upload.
+ * @returns {Promise<string>} URL of the uploaded image.
+ * @throws {Error} If an error occurs during the upload.
+ */
+const uploadImageToImageKit = async (imageFile) => {
+  const allowedTypes = [
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ];
+  if (!allowedTypes.includes(imageFile.type)) {
+    throw new Error("Unsupported image type");
+  }
+
+  const maxSize = 1 * 1024 * 1024; // 1 MB
+  if (imageFile.size > maxSize) {
+    throw new Error("Image size exceeds the maximum limit of 1MB");
+  }
+
+  const formData = new FormData();
+  formData.append("file", imageFile);
+  formData.append("fileName", `cat_${imageFile.name}`);
+  formData.append(
+    "transformation",
+    JSON.stringify({ pre: "h-100,w-100,c-at_max,q-85" })
+  );
+
+  const response = await fetch(Deno.env.get("IMAGEKIT_UPLOAD_URL"), {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(
+        Deno.env.get("IMAGEKIT_PRIVATE_KEY") + ":"
+      )}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("ImageKit Response:", errorText);
+    throw new Error(
+      `Error uploading image to ImageKit: ${response.statusText} - ${errorText}`
+    );
+  }
+
+  const data = await response.json();
+  return data.url;
+};
+
+/**
+ * Updates a category in the database.
+ * @param {Object} turso - Turso client.
+ * @param {number} id - Category ID.
+ * @param {string} name - Category name.
+ * @param {string} image - Category image URL.
+ * @param {number} userId - ID of the user performing the update.
+ * @param {boolean} isActive - Whether the category is active.
+ * @returns {Promise<Object>} Updated category object.
+ * @throws {Error} If an error occurs during the transaction.
+ */
 const updateCategory = async (turso, id, name, image, userId, isActive) => {
   const tx = await turso.transaction();
 
@@ -74,7 +173,31 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
       throw new Error("Cannot update a deleted category");
     }
 
-    const isActiveInt = isActive ? 1 : 0;
+    const updatedName = name || oldCategory.name;
+    const updatedImage = image || oldCategory.image;
+    const isActiveInt =
+      isActive !== null && isActive !== undefined
+        ? isActive === "true" || isActive === true
+          ? 1
+          : 0
+        : oldCategory.is_active;
+
+    // Check if there are no updates to be made
+    if (
+      updatedName === oldCategory.name &&
+      updatedImage === oldCategory.image &&
+      isActiveInt === oldCategory.is_active
+    ) {
+      return new Response(
+        JSON.stringify({ message: "No updates to be made" }),
+        {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+    }
 
     await tx.execute({
       sql: `UPDATE categories 
@@ -84,7 +207,7 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
                 edited_by = ?,
                 edited_at = datetime('now')
             WHERE id = ?`,
-      args: [name, image, isActiveInt, userId, id],
+      args: [updatedName, updatedImage, isActiveInt, userId, id],
     });
 
     const updatedCategoryResponse = await tx.execute({
@@ -112,8 +235,8 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
           is_active: oldCategory.is_active === 1,
         }),
         JSON.stringify({
-          name,
-          image,
+          name: updatedName,
+          image: updatedImage,
           is_active: isActiveInt === 1,
         }),
       ],
@@ -128,6 +251,12 @@ const updateCategory = async (turso, id, name, image, userId, isActive) => {
   }
 };
 
+/**
+ * Handles incoming requests to update a category.
+ * Applies best practices for Turso connections, error handling, and documentation.
+ * @param {Request} request - Incoming request object.
+ * @returns {Promise<Response>} HTTP response containing the updated category data or an error message.
+ */
 export default async (request) => {
   const corsHeaders = getCorsHeaders();
 
@@ -136,36 +265,50 @@ export default async (request) => {
   }
 
   let requestData;
+  const turso = createTursoClient();
 
   try {
-    if (request.method !== "PUT") {
+    if (request.method !== "PATCH") {
       throw new Error("Method not allowed");
     }
 
     const apiKey = request.headers.get("X-API-KEY");
     validateApiKey(apiKey);
 
-    requestData = await request.json();
-    const { id, name, image, user_id, is_active } =
-      validateRequestData(requestData);
-    const { sanitized_name, sanitized_image } = sanitizeData(name, image);
+    const formData = await request.formData();
 
-    const turso = createTursoClient();
+    const id = formData.get("id");
+    const name = formData.get("name");
+    const user_id = formData.get("user_id");
+    const is_active = formData.get("is_active");
+    const imageFile = formData.get("image");
+
+    if (!id || !user_id) {
+      throw new Error("Fields 'id' and 'user_id' are required");
+    }
+
+    requestData = { id, user_id };
+    const sanitizedData = sanitizeData({ name, user_id });
+
+    let imageUrl = formData.get("image_url");
+    if (imageFile instanceof File) {
+      imageUrl = await uploadImageToImageKit(imageFile);
+    }
 
     console.log("[INFO] Updating category:", {
       id,
-      name: sanitized_name,
-      image: sanitized_image,
-      user_id,
+      name: sanitizedData.name,
+      image: imageUrl,
+      user_id: sanitizedData.user_id,
       is_active,
     });
 
     const category = await updateCategory(
       turso,
       id,
-      sanitized_name,
-      sanitized_image,
-      user_id,
+      sanitizedData.name,
+      imageUrl,
+      sanitizedData.user_id,
       is_active
     );
 
@@ -189,7 +332,8 @@ export default async (request) => {
 
     let status = 500;
     if (error.message.includes("Invalid API key")) status = 403;
-    if (error.message.includes("All fields are required")) status = 400;
+    if (error.message.includes("Fields 'id' and 'user_id' are required"))
+      status = 400;
     if (error.message === "Method not allowed") status = 405;
     if (error.message === "Category not found") status = 404;
     if (error.message === "Cannot update a deleted category") status = 400;
@@ -202,5 +346,14 @@ export default async (request) => {
         "Content-Type": "application/json",
       },
     });
+  } finally {
+    if (turso) {
+      try {
+        await turso.execute({ type: "close" });
+        console.log("[INFO] Turso connection closed successfully.");
+      } catch (closeError) {
+        console.error("[ERROR] Failed to close Turso connection:", closeError);
+      }
+    }
   }
 };
