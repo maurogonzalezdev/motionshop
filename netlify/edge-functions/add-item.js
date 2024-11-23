@@ -1,12 +1,12 @@
+// add-item.js
+
 import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
+import validator from "https://esm.sh/validator@13.7.0";
 
-const createTursoClient = () => {
-  return createClient({
-    url: Deno.env.get("TURSO_URL"),
-    authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
-  });
-};
-
+/**
+ * Obtains the necessary CORS headers for responses.
+ * @returns {Object} CORS headers.
+ */
 const getCorsHeaders = () => {
   const allowedOrigin = Deno.env.get("FORUM_URL");
   return {
@@ -16,6 +16,11 @@ const getCorsHeaders = () => {
   };
 };
 
+/**
+ * Validates the API key provided in the headers.
+ * @param {string} apiKey - API key to validate.
+ * @throws {Error} If the API key is not valid.
+ */
 const validateApiKey = (apiKey) => {
   if (!apiKey) {
     throw new Error("API key is required");
@@ -25,26 +30,22 @@ const validateApiKey = (apiKey) => {
   }
 };
 
-const validateRequestData = (requestData) => {
-  if (!requestData || typeof requestData !== "object") {
-    throw new Error("Invalid request data");
-  }
-
-  const { name, description, image, price, categories, user_id } = requestData;
-
-  if (!name || !description || !image || !price || !categories || !user_id) {
-    throw new Error(
-      "All fields are required: name, description, image, price, categories, and user_id"
-    );
-  }
-
-  if (!Array.isArray(categories) || categories.length === 0) {
-    throw new Error("Categories must be an array with at least one category");
-  }
-
-  const sanitizedPrice = parseFloat(price);
-  const sanitizedUserId = parseInt(user_id, 10);
-  const sanitizedCategories = categories.map((id) => parseInt(id, 10));
+/**
+ * Sanitizes and validates the data received in the request.
+ * @param {Object} data - Request data.
+ * @returns {Object} Sanitized data.
+ * @throws {Error} If the data is not valid.
+ */
+const sanitizeData = (data) => {
+  const sanitizedName = validator.escape(validator.trim(data.name));
+  const sanitizedDescription = validator.escape(
+    validator.trim(data.description)
+  );
+  const sanitizedPrice = parseFloat(data.price);
+  const sanitizedUserId = parseInt(data.user_id, 10);
+  const sanitizedCategories = Array.isArray(data.categories)
+    ? data.categories.map((id) => parseInt(id, 10))
+    : [parseInt(data.categories, 10)];
 
   if (isNaN(sanitizedPrice) || isNaN(sanitizedUserId)) {
     throw new Error("Invalid price or user ID");
@@ -59,27 +60,60 @@ const validateRequestData = (requestData) => {
   }
 
   return {
-    name,
-    description,
-    image,
+    name: sanitizedName,
+    description: sanitizedDescription,
     price: sanitizedPrice,
     categories: sanitizedCategories,
     user_id: sanitizedUserId,
   };
 };
 
-const sanitizeData = (name, description, image) => {
-  return {
-    sanitized_name: String(name).replace(/[^a-zA-Z0-9 ]/g, ""),
-    sanitized_description: String(description).replace(/[^a-zA-Z0-9 .,]/g, ""),
-    sanitized_image: String(image).replace(/[^a-zA-Z0-9:/.]/g, ""),
-  };
+/**
+ * Validates the request data.
+ * @param {Object} requestData - Request data.
+ * @throws {Error} If the data is not valid.
+ */
+const validateRequestData = (requestData) => {
+  if (!requestData || typeof requestData !== "object") {
+    throw new Error("Invalid request data");
+  }
+
+  const { name, description, price, categories, user_id } = requestData;
+
+  if (
+    !name ||
+    !description ||
+    price === undefined ||
+    !categories ||
+    categories.length === 0 ||
+    !user_id
+  ) {
+    throw new Error(
+      "All fields are required: name, description, image, price, categories, and user_id"
+    );
+  }
+
+  if (!validator.isLength(name, { min: 1, max: 100 })) {
+    throw new Error("Name must be between 1 and 100 characters");
+  }
+
+  if (!validator.isLength(description, { min: 1, max: 500 })) {
+    throw new Error("Description must be between 1 and 500 characters");
+  }
+
+  // 'price' and 'user_id' have already been validated as numbers in sanitizeData
 };
 
+/**
+ * Validates that the categories exist in the database.
+ * @param {Object} turso - Turso client.
+ * @param {number[]} categories - Category IDs.
+ * @throws {Error} If any category does not exist.
+ */
 const validateCategoriesExist = async (turso, categories) => {
   const placeholders = categories.map(() => "?").join(",");
   const response = await turso.execute({
-    sql: `SELECT id, name FROM categories WHERE id IN (${placeholders}) AND is_deleted = 0`,
+    sql: `SELECT id FROM categories WHERE id IN (${placeholders}) AND is_deleted = 0`,
     args: categories,
   });
 
@@ -90,11 +124,76 @@ const validateCategoriesExist = async (turso, categories) => {
   }
 };
 
+/**
+ * Uploads an image to ImageKit and returns the image URL.
+ * @param {File} imageFile - Image file to upload.
+ * @returns {Promise<string>} URL of the uploaded image.
+ * @throws {Error} If an error occurs during the upload.
+ */
+const uploadImageToImageKit = async (imageFile) => {
+  const allowedTypes = [
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+  ];
+  if (!allowedTypes.includes(imageFile.type)) {
+    throw new Error("Unsupported image type");
+  }
+
+  const maxSize = 1 * 1024 * 1024; // 1 MB
+  if (imageFile.size > maxSize) {
+    throw new Error("Image size exceeds the maximum limit of 1MB");
+  }
+
+  const formData = new FormData();
+  formData.append("file", imageFile);
+  formData.append("fileName", `item_${imageFile.name}`);
+  formData.append(
+    "transformation",
+    JSON.stringify({ pre: "h-200,w-200,c-at_max,q-80" })
+  );
+
+  const response = await fetch(Deno.env.get("IMAGEKIT_UPLOAD_URL"), {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${btoa(
+        Deno.env.get("IMAGEKIT_PRIVATE_KEY") + ":"
+      )}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error("ImageKit Response:", errorText);
+    throw new Error(
+      `Error uploading image to ImageKit: ${response.statusText} - ${errorText}`
+    );
+  }
+
+  const data = await response.json();
+  return data.url;
+};
+
+/**
+ * Adds a new item to the database.
+ * @param {Object} turso - Turso client.
+ * @param {string} name - Item name.
+ * @param {string} description - Item description.
+ * @param {string} imageUrl - URL of the item's image.
+ * @param {number} price - Item price.
+ * @param {number[]} categories - Associated category IDs.
+ * @param {number} userId - ID of the user creating the item.
+ * @returns {Promise<Object>} Created item object.
+ * @throws {Error} If an error occurs during the transaction.
+ */
 const addItem = async (
   turso,
   name,
   description,
-  image,
+  imageUrl,
   price,
   categories,
   userId
@@ -110,7 +209,7 @@ const addItem = async (
               name, description, price, image, 
               is_active, is_deleted, created_by, edited_by
             ) VALUES (?, ?, ?, ?, 1, 0, ?, ?)`,
-      args: [name, description, price, image, userId, userId],
+      args: [name, description, price, imageUrl, userId, userId],
     });
 
     newItemId = Number(insertResponse.lastInsertRowid);
@@ -152,7 +251,7 @@ const addItem = async (
         JSON.stringify({
           name,
           description,
-          image,
+          image: imageUrl,
           price,
           is_active: true,
           is_deleted: false,
@@ -170,6 +269,11 @@ const addItem = async (
   }
 };
 
+/**
+ * Handles incoming requests to add a new item.
+ * @param {Request} request - Incoming request object.
+ * @returns {Promise<Response>} HTTP response.
+ */
 export default async (request) => {
   const corsHeaders = getCorsHeaders();
 
@@ -177,7 +281,7 @@ export default async (request) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  let requestData;
+  let requestData = {}; // Define requestData in the external scope
 
   try {
     if (request.method !== "POST") {
@@ -187,32 +291,77 @@ export default async (request) => {
     const apiKey = request.headers.get("X-API-KEY");
     validateApiKey(apiKey);
 
-    requestData = await request.json();
-    const { name, description, image, price, categories, user_id } =
-      validateRequestData(requestData);
-    const { sanitized_name, sanitized_description, sanitized_image } =
-      sanitizeData(name, description, image);
+    // Parse the data using FormData
+    const formData = await request.formData();
 
-    // Crear el cliente de Turso dentro del manejador
-    const turso = createTursoClient();
+    // Extract the fields
+    const name = formData.get("name");
+    const description = formData.get("description");
+    const price = formData.get("price");
+    const categories = formData.getAll("categories"); // Assuming it's an array of IDs
+    const user_id = formData.get("user_id");
+    const imageFile = formData.get("image");
 
-    console.log("[INFO] Creating item:", {
-      name: sanitized_name,
-      description: sanitized_description,
-      image: sanitized_image,
+    // Validate that the fields exist
+    if (
+      !name ||
+      !description ||
+      price === null ||
+      price === undefined ||
+      categories.length === 0 ||
+      !user_id ||
+      !imageFile
+    ) {
+      throw new Error(
+        "All fields are required: name, description, image, price, categories, and user_id"
+      );
+    }
+
+    // Sanitize and validate the data
+    requestData = sanitizeData({
+      name,
+      description,
       price,
       categories,
       user_id,
     });
+    validateRequestData(requestData);
 
+    // Handle the image file
+    let imageUrl = "";
+    if (imageFile instanceof File) {
+      imageUrl = await uploadImageToImageKit(imageFile);
+    } else {
+      throw new Error("Invalid image file");
+    }
+
+    // Update the sanitized image with the uploaded URL
+    requestData.image = imageUrl;
+
+    // Create the Turso client within the handler to avoid "invalid baton"
+    const turso = createClient({
+      url: Deno.env.get("TURSO_URL"),
+      authToken: Deno.env.get("TURSO_AUTH_TOKEN"),
+    });
+
+    console.log("[INFO] Creating item:", {
+      name: requestData.name,
+      description: requestData.description,
+      image: requestData.image,
+      price: requestData.price,
+      categories: requestData.categories,
+      user_id: requestData.user_id,
+    });
+
+    // Insert the item and wait for the result to get the ID
     const item = await addItem(
       turso,
-      sanitized_name,
-      sanitized_description,
-      sanitized_image,
-      price,
-      categories,
-      user_id
+      requestData.name,
+      requestData.description,
+      requestData.image,
+      requestData.price,
+      requestData.categories,
+      requestData.user_id
     );
 
     console.log("[SUCCESS] Item created successfully:", {
@@ -220,7 +369,19 @@ export default async (request) => {
       name: item.name,
     });
 
-    return new Response(JSON.stringify(item), {
+    // Build the response object
+    const newItem = {
+      id: item.id,
+      name: item.name,
+      description: item.description,
+      image: item.image,
+      price: item.price,
+      is_active: item.is_active,
+      is_deleted: item.is_deleted,
+      categories: item.categories,
+    };
+
+    return new Response(JSON.stringify(newItem), {
       status: 201,
       headers: {
         ...corsHeaders,
@@ -230,20 +391,25 @@ export default async (request) => {
   } catch (error) {
     console.error("[ERROR] Failed to create item:", {
       error: error.message,
-      item: requestData?.name || "Unknown",
+      item: requestData.name || "Unknown",
     });
 
     let status = 500;
-    if (error.message.includes("Invalid API key")) status = 403;
-    if (error.message.includes("All fields are required")) status = 400;
-    if (error.message === "Method not allowed") status = 405;
-    if (error.message === "Failed to verify item creation") status = 500;
-    if (error.message === "Invalid request data") status = 400;
-    if (error.message.includes("Categories not found")) status = 400;
-    if (error.message === "Invalid price or user ID") status = 400;
-    if (error.message === "Invalid category ID format") status = 400;
+    const errorMessage = error.message;
 
-    return new Response(JSON.stringify({ error: error.message }), {
+    if (errorMessage.includes("Invalid API key")) status = 403;
+    if (errorMessage.includes("All fields are required")) status = 400;
+    if (errorMessage === "Method not allowed") status = 405;
+    if (errorMessage === "Failed to verify item creation") status = 500;
+    if (errorMessage === "Invalid request data") status = 400;
+    if (errorMessage.includes("Categories not found")) status = 400;
+    if (errorMessage === "Invalid price or user ID") status = 400;
+    if (errorMessage === "Invalid category ID format") status = 400;
+    if (errorMessage.includes("Unsupported image type")) status = 400;
+    if (errorMessage.includes("Image size exceeds")) status = 400;
+    if (errorMessage.includes("Invalid image file")) status = 400;
+
+    return new Response(JSON.stringify({ error: errorMessage }), {
       status,
       headers: {
         ...corsHeaders,
