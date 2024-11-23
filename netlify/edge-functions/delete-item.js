@@ -226,10 +226,14 @@ export default async (request) => {
   } finally {
     if (turso) {
       try {
-        await turso.execute({ type: "close" });
+        // Close connection without parameters
+        await turso.close();
         console.log("[INFO] Turso connection closed successfully.");
       } catch (closeError) {
-        console.error("[ERROR] Failed to close Turso connection:", closeError);
+        console.error("[ERROR] Failed to close Turso connection:", {
+          name: closeError.name,
+          message: closeError.message,
+        });
       }
     }
   }
