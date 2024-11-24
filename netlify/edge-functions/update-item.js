@@ -53,6 +53,7 @@ const hasUpdateableFields = (formData) => {
     "price",
     "image",
     "is_active",
+    "categories",
   ];
   return updateableFields.some((field) => {
     const value = formData.get(field);
@@ -180,6 +181,26 @@ const uploadImageToImageKit = async (imageFile) => {
 };
 
 /**
+ * Validates that the provided categories exist and are not deleted.
+ * @param {Object} turso - Turso client.
+ * @param {Array<number>} categories - Array of category IDs.
+ * @throws {Error} If any category does not exist or is deleted.
+ */
+const validateCategoriesExist = async (turso, categories) => {
+  const placeholders = categories.map(() => "?").join(",");
+  const response = await turso.execute({
+    sql: `SELECT id FROM categories WHERE id IN (${placeholders}) AND is_deleted = 0`,
+    args: categories,
+  });
+
+  if (response.rows.length !== categories.length) {
+    const foundIds = response.rows.map((row) => row.id);
+    const missingIds = categories.filter((id) => !foundIds.includes(id));
+    throw new Error(`Categories not found: ${missingIds.join(", ")}`);
+  }
+};
+
+/**
  * Updates an item in the database.
  * @param {Object} turso - Turso client.
  * @param {number} id - Item ID.
@@ -189,6 +210,7 @@ const uploadImageToImageKit = async (imageFile) => {
  * @param {string} image - Item image URL.
  * @param {number} userId - ID of the user performing the update.
  * @param {boolean} isActive - Whether the item is active.
+ * @param {Array<number>} categories - Array of category IDs.
  * @returns {Promise<Object>} Updated item object.
  * @throws {Error} If an error occurs during the transaction.
  */
@@ -200,7 +222,8 @@ const updateItem = async (
   price,
   image,
   userId,
-  isActive
+  isActive,
+  categories
 ) => {
   const tx = await turso.transaction();
 
@@ -256,14 +279,41 @@ const updateItem = async (
     // Add item id to args
     args.push(id);
 
-    if (updates.length === 0) {
-      return { message: "No updates to be made" };
+    if (updates.length > 0) {
+      await tx.execute({
+        sql: `UPDATE items SET ${updates.join(", ")} WHERE id = ?`,
+        args: args,
+      });
     }
 
-    await tx.execute({
-      sql: `UPDATE items SET ${updates.join(", ")} WHERE id = ?`,
-      args: args,
-    });
+    // Handle categories
+    if (categories && categories.length > 0) {
+      await validateCategoriesExist(turso, categories);
+
+      // Delete existing categories
+      await tx.execute({
+        sql: "DELETE FROM item_categories WHERE item_id = ?",
+        args: [id],
+      });
+
+      // Insert new categories
+      for (const categoryId of categories) {
+        await tx.execute({
+          sql: "INSERT INTO item_categories (item_id, category_id) VALUES (?, ?)",
+          args: [id, categoryId],
+        });
+      }
+    } else {
+      // Ensure the item has at least one category
+      const existingCategoriesResponse = await tx.execute({
+        sql: "SELECT category_id FROM item_categories WHERE item_id = ?",
+        args: [id],
+      });
+
+      if (!existingCategoriesResponse.rows.length) {
+        throw new Error("At least one category is required");
+      }
+    }
 
     const updatedItemResponse = await tx.execute({
       sql: `SELECT * FROM items WHERE id = ?`,
@@ -345,6 +395,7 @@ export default async (request) => {
     const price = formData.get("price");
     const is_active = formData.get("is_active");
     const imageFile = formData.get("image");
+    const categories = formData.getAll("categories").map(Number);
 
     const sanitizedData = sanitizeData({
       name,
@@ -368,7 +419,8 @@ export default async (request) => {
       sanitizedData.price,
       imageUrl,
       sanitizedData.user_id,
-      is_active
+      is_active,
+      categories
     );
 
     if (item.message === "No updates to be made") {
@@ -417,7 +469,6 @@ export default async (request) => {
   } finally {
     if (turso) {
       try {
-        // Close connection without parameters
         await turso.close();
         console.log("[INFO] Turso connection closed successfully.");
       } catch (closeError) {
