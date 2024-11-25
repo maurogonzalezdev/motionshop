@@ -79,6 +79,8 @@ const softDeleteCategory = async (turso, id, userId) => {
   const tx = await turso.transaction();
 
   try {
+    console.log("[INFO] Starting transaction for category ID:", id);
+
     const oldCategoryResponse = await tx.execute({
       sql: "SELECT * FROM categories WHERE id = ?",
       args: [id],
@@ -89,11 +91,13 @@ const softDeleteCategory = async (turso, id, userId) => {
     }
 
     const oldCategory = oldCategoryResponse.rows[0];
+    console.log("[INFO] Found category:", oldCategory);
 
     if (oldCategory.is_deleted === 1) {
       throw new Error("Category is already deleted");
     }
 
+    // Soft delete the category
     await tx.execute({
       sql: `UPDATE categories 
             SET is_active = 0, 
@@ -103,43 +107,123 @@ const softDeleteCategory = async (turso, id, userId) => {
             WHERE id = ?`,
       args: [userId, id],
     });
+    console.log("[INFO] Soft deleted category ID:", id);
 
-    const updatedCategoryResponse = await tx.execute({
-      sql: `SELECT * FROM categories WHERE id = ?`,
+    // Get items that will need to be soft deleted (those with only this category)
+    const itemsToDeleteResponse = await tx.execute({
+      sql: `WITH ItemCategoryCounts AS (
+              SELECT ic.item_id, COUNT(ic.category_id) as category_count
+              FROM item_categories ic
+              GROUP BY ic.item_id
+            )
+            SELECT DISTINCT i.id
+            FROM items i
+            INNER JOIN item_categories ic ON i.id = ic.item_id
+            INNER JOIN ItemCategoryCounts icc ON i.id = icc.item_id
+            WHERE ic.category_id = ?
+            AND icc.category_count = 1
+            AND i.is_deleted = 0`,
       args: [id],
     });
 
-    if (!updatedCategoryResponse?.rows?.length) {
-      throw new Error("Failed to verify category update");
+    console.log("[INFO] Items to be soft deleted:", itemsToDeleteResponse.rows);
+
+    // Soft delete items that only belonged to this category
+    if (itemsToDeleteResponse.rows.length > 0) {
+      const itemIds = itemsToDeleteResponse.rows.map((row) => row.id);
+
+      // Create placeholders for the IN clause
+      const placeholders = itemIds.map(() => "?").join(",");
+
+      // Get current state of items before updating them
+      const itemsBeforeUpdateResponse = await tx.execute({
+        sql: `SELECT id, is_active, is_deleted FROM items WHERE id IN (${placeholders})`,
+        args: itemIds,
+      });
+
+      if (!itemsBeforeUpdateResponse?.rows?.length) {
+        throw new Error("Items not found for soft delete");
+      }
+
+      const itemsBeforeUpdate = itemsBeforeUpdateResponse.rows;
+      console.log("[INFO] Items before update:", itemsBeforeUpdate);
+
+      // Soft delete the items using placeholders
+      await tx.execute({
+        sql: `UPDATE items 
+              SET is_active = 0,
+                  is_deleted = 1,
+                  edited_at = datetime('now'),
+                  edited_by = ?
+              WHERE id IN (${placeholders})`,
+        args: [userId, ...itemIds],
+      });
+      console.log("[INFO] Soft deleted items:", itemIds);
+
+      // Add audit entries with correct old values
+      for (const item of itemsBeforeUpdate) {
+        await tx.execute({
+          sql: `INSERT INTO items_audit 
+                (item_id, user_id, action_type, old_values, new_values)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: [
+            item.id,
+            userId,
+            "DELETE",
+            JSON.stringify({
+              is_active: item.is_active === 1,
+              is_deleted: item.is_deleted === 0,
+            }),
+            JSON.stringify({
+              is_active: false,
+              is_deleted: true,
+            }),
+          ],
+        });
+      }
+      console.log("[INFO] Added audit entries for items:", itemIds);
     }
 
-    const updatedCategory = updatedCategoryResponse.rows[0];
+    // Remove all category associations for this category
+    await tx.execute({
+      sql: `DELETE FROM item_categories WHERE category_id = ?`,
+      args: [id],
+    });
+    console.log("[INFO] Removed category associations for category ID:", id);
 
+    // Add category audit entry with more detailed information
     await tx.execute({
       sql: `INSERT INTO categories_audit 
-            (category_id, user_id, action_type, old_values, new_values) 
-            VALUES (?, ?, 'DELETE', ?, ?)`,
+            (category_id, user_id, action_type, old_values, new_values)
+            VALUES (?, ?, ?, ?, ?)`,
       args: [
         id,
         userId,
+        "DELETE",
         JSON.stringify({
           id: oldCategory.id,
           name: oldCategory.name,
           image: oldCategory.image,
           is_active: oldCategory.is_active === 1,
-          is_deleted: oldCategory.is_deleted === 1,
+          is_deleted: oldCategory.is_deleted === 0,
+          created_at: oldCategory.created_at,
+          edited_at: oldCategory.edited_at,
+          created_by: oldCategory.created_by,
           edited_by: oldCategory.edited_by,
         }),
         JSON.stringify({
           is_active: false,
           is_deleted: true,
           edited_by: userId,
+          edited_at: new Date().toISOString(),
         }),
       ],
     });
+    console.log("[INFO] Added audit entry for category ID:", id);
 
     await tx.commit();
-    return updatedCategory;
+    console.log("[INFO] Transaction committed for category ID:", id);
+    return oldCategory;
   } catch (error) {
     console.error("[ERROR] Transaction failed:", error);
     await tx.rollback();
