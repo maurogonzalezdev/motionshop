@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@libsql/client@0.6.0/web";
 
+// Duplicar funciones utilitarias necesarias
 const createTursoClient = () => {
   return createClient({
     url: Deno.env.get("TURSO_URL"),
@@ -17,28 +18,19 @@ const getCorsHeaders = () => {
 };
 
 const validateApiKey = (apiKey) => {
-  if (!apiKey) {
-    throw new Error("API key is required");
-  }
-  if (apiKey !== Deno.env.get("API_KEY")) {
-    throw new Error("Invalid API key");
-  }
+  if (!apiKey) throw new Error("API key is required");
+  if (apiKey !== Deno.env.get("API_KEY")) throw new Error("Invalid API key");
 };
 
 const validateUserId = (userId) => {
-  if (!userId || isNaN(Number(userId))) {
-    throw new Error("Invalid user ID");
-  }
+  if (!userId || isNaN(Number(userId))) throw new Error("Invalid user ID");
 };
 
 const validateUserIds = (userIds) => {
-  if (!userIds || !Array.isArray(userIds)) {
+  if (!userIds || !Array.isArray(userIds))
     throw new Error("Invalid user IDs format");
-  }
   userIds.forEach((id) => {
-    if (isNaN(Number(id))) {
-      throw new Error("Invalid user ID format");
-    }
+    if (isNaN(Number(id))) throw new Error("Invalid user ID format");
   });
 };
 
@@ -58,11 +50,23 @@ const registerNewUser = async (turso, userId) => {
       args: [userId, JSON.stringify({ user_id: userId, credits: 100 })],
     });
 
+    // Retrieve the newly inserted user
+    const userResult = await tx.execute({
+      sql: `SELECT * FROM users WHERE user_id = ?`,
+      args: [userId],
+    });
+
+    if (userResult.rows.length === 0) {
+      throw new Error("Failed to register new user");
+    }
+
     await tx.commit();
 
+    const user = userResult.rows[0];
     return {
-      user_id: userId,
-      credits: 100,
+      id: user.id,
+      user_id: user.user_id,
+      credits: user.credits,
       inventory: [],
       bag: [],
     };
@@ -81,22 +85,22 @@ const registerNewUsers = async (turso, userIds) => {
       const insertResponse = await tx.execute({
         sql: `INSERT INTO users (user_id, credits) 
               SELECT ?, 100 
-              WHERE NOT EXISTS (SELECT 1 FROM users WHERE user_id = ?)`,
+              WHERE NOT EXISTS (SELECT 1 FROM users WHERE user_id = ?)`, // Changed from 1000 to 100
         args: [userId, userId],
       });
 
       if (insertResponse.rowsAffected > 0) {
-        // Obtener datos del usuario recién creado
-        await tx.execute({
-          sql: `SELECT * FROM users WHERE user_id = ?`,
-          args: [userId],
-        });
-
-        // Registrar en la auditoría
+        // Add audit record
         await tx.execute({
           sql: `INSERT INTO users_audit (user_id, action_type, new_values)
                 VALUES (?, 'INSERT', ?)`,
           args: [userId, JSON.stringify({ user_id: userId, credits: 100 })],
+        });
+
+        // Obtener datos del usuario recién creado
+        await tx.execute({
+          sql: `SELECT * FROM users WHERE user_id = ?`,
+          args: [userId],
         });
 
         newUsers.push({
@@ -116,8 +120,7 @@ const registerNewUsers = async (turso, userIds) => {
   }
 };
 
-const getBag = async (turso, userId) => {
-  // Check if user exists or register
+const getInventory = async (turso, userId) => {
   let userResult = await turso.execute({
     sql: `SELECT * FROM users WHERE user_id = ?`,
     args: [userId],
@@ -129,24 +132,23 @@ const getBag = async (turso, userId) => {
 
   const user = userResult.rows[0];
 
-  // Get only bag items
-  const bagResult = await turso.execute({
+  // Get all inventory items including bag quantities
+  const inventoryResult = await turso.execute({
     sql: `
       SELECT 
         i.id, i.name, i.description, i.price, i.image,
-        inv.quantity_in_bag
+        inv.total_quantity, inv.quantity_in_bag
       FROM items i
       INNER JOIN inventory inv ON i.id = inv.item_id
       WHERE inv.user_id = ? 
-      AND inv.quantity_in_bag > 0 
       AND i.is_deleted = 0
       ORDER BY i.name ASC
     `,
     args: [user.id],
   });
 
-  // Get categories for bag items only
-  const itemIds = bagResult.rows.map((item) => item.id);
+  // Get categories for all items
+  const itemIds = inventoryResult.rows.map((item) => item.id);
   const categoriesResult = itemIds.length
     ? await turso.execute({
         sql: `
@@ -170,14 +172,15 @@ const getBag = async (turso, userId) => {
     });
   });
 
-  // Process bag items
-  const bag = bagResult.rows.map((item) => ({
+  // Process inventory items
+  const inventory = inventoryResult.rows.map((item) => ({
     id: item.id,
     name: item.name,
     description: item.description,
     price: item.price,
     image: item.image,
-    quantity: item.quantity_in_bag,
+    total_quantity: item.total_quantity,
+    quantity_in_bag: item.quantity_in_bag,
     categories: categoriesByItem[item.id] || [],
   }));
 
@@ -185,88 +188,26 @@ const getBag = async (turso, userId) => {
     id: user.id,
     user_id: user.user_id,
     credits: user.credits,
-    bag,
+    inventory,
+    bag: inventory.filter((item) => item.quantity_in_bag > 0),
   };
 };
 
-const getBags = async (turso, userIds) => {
+const getInventories = async (turso, userIds) => {
   // Register any new users first
   const newUsers = await registerNewUsers(turso, userIds);
 
-  // Get all existing users
-  const userResult = await turso.execute({
-    sql: `SELECT * FROM users WHERE user_id IN (${userIds.join(",")})`,
-    args: [],
-  });
+  // Get all users' inventories in parallel
+  const inventoryPromises = userIds.map((userId) =>
+    getInventory(turso, parseInt(userId))
+  );
+  const inventories = await Promise.all(inventoryPromises);
 
-  const users = [...userResult.rows, ...newUsers];
-  const result = {};
-
-  // Get all bags in one query
-  const bagResult = await turso.execute({
-    sql: `
-      SELECT 
-        i.id, i.name, i.description, i.price, i.image,
-        inv.user_id, inv.quantity_in_bag
-      FROM items i
-      INNER JOIN inventory inv ON i.id = inv.item_id
-      WHERE inv.user_id IN (
-        SELECT id FROM users WHERE user_id IN (${userIds.join(",")})
-      ) 
-      AND inv.quantity_in_bag > 0
-      AND i.is_deleted = 0
-      ORDER BY inv.user_id, i.name ASC
-    `,
-    args: [],
-  });
-
-  // Get categories only if we have items
-  const itemIds = [...new Set(bagResult.rows.map((item) => item.id))];
-  const categoriesResult = itemIds.length
-    ? await turso.execute({
-        sql: `
-      SELECT c.id, c.name, c.image, ic.item_id
-      FROM categories c
-      INNER JOIN item_categories ic ON c.id = ic.category_id
-      WHERE ic.item_id IN (${itemIds.join(",")}) AND c.is_deleted = 0
-    `,
-        args: [],
-      })
-    : { rows: [] };
-
-  // Create categories lookup
-  const categoriesByItem = {};
-  categoriesResult.rows.forEach((cat) => {
-    if (!categoriesByItem[cat.item_id]) categoriesByItem[cat.item_id] = [];
-    categoriesByItem[cat.item_id].push({
-      id: cat.id,
-      name: cat.name,
-      image: cat.image,
-    });
-  });
-
-  // Process users and their bags
-  users.forEach((user) => {
-    const userItems = bagResult.rows.filter((item) => item.user_id === user.id);
-    const bag = userItems.map((item) => ({
-      id: item.id,
-      name: item.name,
-      description: item.description,
-      price: item.price,
-      image: item.image,
-      quantity: item.quantity_in_bag,
-      categories: categoriesByItem[item.id] || [],
-    }));
-
-    result[user.user_id] = {
-      id: user.id,
-      user_id: user.user_id,
-      credits: user.credits,
-      bag,
-    };
-  });
-
-  return result;
+  // Convert array to object with user_id as key
+  return inventories.reduce((acc, inv) => {
+    acc[inv.user_id] = inv;
+    return acc;
+  }, {});
 };
 
 export default async (request) => {
@@ -289,16 +230,19 @@ export default async (request) => {
     let result;
     if (userId) {
       validateUserId(userId);
-      result = await getBag(turso, parseInt(userId));
+      result = await getInventory(turso, parseInt(userId));
     } else if (userIds) {
       const ids = userIds.split(",");
       validateUserIds(ids);
-      result = await getBags(turso, ids);
+      result = await getInventories(turso, ids);
     } else {
       throw new Error("Either user_id or user_ids parameter is required");
     }
 
-    return new Response(JSON.stringify(result), {
+    const responseData = JSON.stringify(result);
+    console.log("[DEBUG] Response data:", responseData); // Add debug log
+
+    return new Response(responseData, {
       status: 200,
       headers: {
         ...corsHeaders,
@@ -307,15 +251,15 @@ export default async (request) => {
     });
   } catch (error) {
     console.error("[ERROR] Operation failed:", error);
+    const errorResponse = JSON.stringify({ error: error.message });
+    console.log("[DEBUG] Error response:", errorResponse); // Add debug log
 
     let status = 500;
-    const errorMessage = error.message;
+    if (error.message.includes("API key")) status = 403;
+    if (error.message === "Method not allowed") status = 405;
+    if (error.message.includes("Invalid user ID")) status = 400;
 
-    if (errorMessage.includes("API key")) status = 403;
-    if (errorMessage === "Method not allowed") status = 405;
-    if (errorMessage.includes("Invalid user ID")) status = 400;
-
-    return new Response(JSON.stringify({ error: errorMessage }), {
+    return new Response(JSON.stringify({ error: error.message }), {
       status,
       headers: {
         ...corsHeaders,
@@ -326,12 +270,8 @@ export default async (request) => {
     if (turso) {
       try {
         await turso.close();
-        console.log("[INFO] Turso connection closed successfully.");
       } catch (closeError) {
-        console.error("[ERROR] Failed to close Turso connection:", {
-          name: closeError.name,
-          message: closeError.message,
-        });
+        console.error("[ERROR] Failed to close Turso connection:", closeError);
       }
     }
   }
