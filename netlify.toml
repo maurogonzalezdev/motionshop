@@ -44,3 +44,7 @@
 [[edge_functions]]
   function = "update-credits"
   path = "/update-credits"
+
+[[edge_functions]]
+  function = "request-service"
+  path = "/request-service"
