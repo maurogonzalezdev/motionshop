@@ -46,7 +46,7 @@ const validateApiKey = (apiKey) => {
  * @throws {Error} If any parameter is invalid.
  */
 const validateUrlParams = (url) => {
-  const allowedParams = ["id", "category_id", "page", "limit"];
+  const allowedParams = ["id", "category_id", "page", "limit", "is_active"];
   for (const param of url.searchParams.keys()) {
     if (!allowedParams.includes(param)) {
       throw new Error(`Invalid parameter: ${param}`);
@@ -101,18 +101,20 @@ const validatePagination = (page, limit) => {
  * @param {string|null} categoryId - Specific category ID to filter items.
  * @param {number} page - Page number for pagination.
  * @param {number} limit - Items per page.
- * @returns {Promise<Object|Object[]>} Single item with categories o un arreglo de items con sus categorías.
+ * @param {number|null} isActive - Filter items by active status.
+ * @returns {Promise<Object|Object[]>} Single item with categories or an array of items with their categories.
  * @throws {Error} If the item or category is not found or a database error occurs.
  */
-const getItems = async (turso, itemId, categoryId, page = 1, limit = 24) => {
+const getItems = async (turso, itemId, categoryId, page = 1, limit = 24, isActive = null) => {
   const offset = (page - 1) * limit;
+  const activeCondition = isActive !== null ? `AND is_active = ${isActive}` : '';
 
   if (itemId) {
     const itemResponse = await turso.execute({
       sql: `
         SELECT id, name, description, price, image, is_active, is_deleted, created_at, edited_at, created_by, edited_by
         FROM items
-        WHERE id = ? AND is_deleted = 0
+        WHERE id = ? AND is_deleted = 0 ${activeCondition}
       `,
       args: [itemId],
     });
@@ -142,7 +144,7 @@ const getItems = async (turso, itemId, categoryId, page = 1, limit = 24) => {
         SELECT COUNT(DISTINCT items.id) as total 
         FROM items
         INNER JOIN item_categories ON items.id = item_categories.item_id
-        WHERE item_categories.category_id = ? AND items.is_deleted = 0
+        WHERE item_categories.category_id = ? AND items.is_deleted = 0 ${activeCondition}
       `,
       args: [categoryId],
     });
@@ -158,7 +160,7 @@ const getItems = async (turso, itemId, categoryId, page = 1, limit = 24) => {
                items.edited_at, items.created_by, items.edited_by
         FROM items
         INNER JOIN item_categories ON items.id = item_categories.item_id
-        WHERE item_categories.category_id = ? AND items.is_deleted = 0
+        WHERE item_categories.category_id = ? AND items.is_deleted = 0 ${activeCondition}
         ORDER BY items.created_at DESC
         LIMIT ? OFFSET ?
       `,
@@ -193,7 +195,7 @@ const getItems = async (turso, itemId, categoryId, page = 1, limit = 24) => {
   } else {
     // Obtener total de items
     const totalQuery = await turso.execute({
-      sql: `SELECT COUNT(*) as total FROM items WHERE is_deleted = 0`,
+      sql: `SELECT COUNT(*) as total FROM items WHERE is_deleted = 0 ${activeCondition}`,
       args: [], // Añadido args vacío
     });
 
@@ -206,7 +208,7 @@ const getItems = async (turso, itemId, categoryId, page = 1, limit = 24) => {
         SELECT id, name, description, price, image, is_active, is_deleted, 
                created_at, edited_at, created_by, edited_by
         FROM items
-        WHERE is_deleted = 0
+        WHERE is_deleted = 0 ${activeCondition}
         ORDER BY created_at DESC
         LIMIT ? OFFSET ?
       `,
@@ -271,6 +273,7 @@ export default async (request) => {
     const categoryId = url.searchParams.get("category_id");
     const page = url.searchParams.get("page") || "1";
     const limit = url.searchParams.get("limit") || "24";
+    const isActive = url.searchParams.get("is_active");
 
     validateItemId(itemId);
     validateCategoryId(categoryId);
@@ -281,7 +284,8 @@ export default async (request) => {
       itemId,
       categoryId,
       parseInt(page),
-      parseInt(limit)
+      parseInt(limit),
+      isActive === "true" ? 1 : isActive === "false" ? 0 : null
     );
 
     if (itemId) {
