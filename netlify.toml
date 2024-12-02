@@ -42,6 +42,10 @@
   path = "/get-inventories"
 
 [[edge_functions]]
+  function = "update-inventory"
+  path = "/update-inventory"
+
+[[edge_functions]]
   function = "purchase-items"
   path = "/purchase-items"
 
