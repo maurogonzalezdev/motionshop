@@ -147,6 +147,10 @@ const getInventory = async (turso, userId) => {
     args: [user.id],
   });
 
+  if (inventoryResult.rows.length === 0) {
+    console.warn(`No inventory found for user_id: ${userId}`);
+  }
+
   // Get categories for all items
   const itemIds = inventoryResult.rows.map((item) => item.id);
   const categoriesResult = itemIds.length
@@ -172,8 +176,8 @@ const getInventory = async (turso, userId) => {
     });
   });
 
-  // Process inventory items
-  const inventory = inventoryResult.rows.map((item) => ({
+  // Process all items and calculate available and bag quantities
+  const allItems = inventoryResult.rows.map((item) => ({
     id: item.id,
     name: item.name,
     description: item.description,
@@ -184,12 +188,28 @@ const getInventory = async (turso, userId) => {
     categories: categoriesByItem[item.id] || [],
   }));
 
+  // Calculate available quantity in inventory (total - in bag)
+  const inventory = allItems
+    .map((item) => ({
+      ...item,
+      quantity: item.total_quantity - item.quantity_in_bag,
+    }))
+    .filter((item) => item.quantity > 0);
+
+  // Calculate quantity in bag
+  const bag = allItems
+    .map((item) => ({
+      ...item,
+      quantity: item.quantity_in_bag,
+    }))
+    .filter((item) => item.quantity > 0);
+
   return {
     id: user.id,
     user_id: user.user_id,
     credits: user.credits,
     inventory,
-    bag: inventory.filter((item) => item.quantity_in_bag > 0),
+    bag,
   };
 };
 
